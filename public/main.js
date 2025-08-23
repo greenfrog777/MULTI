@@ -20,10 +20,45 @@ function preload()
     });
 
     // ...any other assets
+
+    // preload
+    this.load.spritesheet('player', 'assets/hana/run.png', {
+        frameWidth: 80,
+        frameHeight: 80
+    });
+
 }
 
 
 function create() {
+
+    // Stop players leaving the game area
+    this.physics.world.setBounds(0, 0, config.width, config.height);
+
+
+    // Define animations
+    this.anims.create({
+        key: 'right',
+        frames: this.anims.generateFrameNumbers('player', { start: 0, end: 7 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'down',
+        frames: this.anims.generateFrameNumbers('player', { start: 8, end: 15 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'up',
+        frames: this.anims.generateFrameNumbers('player', { start: 16, end: 23 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+
     cursors = this.input.keyboard.createCursorKeys();
 
     wasd = this.input.keyboard.addKeys({
@@ -93,10 +128,43 @@ function update() {
     }
 }
 
-// Helper: add a new player rectangle
+function lightenColor(hexColor, amount = 0.5) {
+    // hexColor: 0xRRGGBB
+    // amount: 0 = no change, 1 = white
+    let r = ((hexColor >> 16) & 0xff);
+    let g = ((hexColor >> 8) & 0xff);
+    let b = (hexColor & 0xff);
+
+    r = Math.round(r + (255 - r) * amount);
+    g = Math.round(g + (255 - g) * amount);
+    b = Math.round(b + (255 - b) * amount);
+
+    return (r << 16) | (g << 8) | b;
+}
+
 function addPlayer(scene, id, info) {
     const colour = info.colour || 0xffffff; // default white if missing
-    players[id] = scene.add.rectangle(info.x, info.y, 50, 50, Phaser.Display.Color.HexStringToColor(colour).color);
+
+    // Create physics sprite
+    players[id] = scene.physics.add.sprite(info.x, info.y, 'player');
+
+    const baseColor = Phaser.Display.Color.HexStringToColor(colour).color;
+    const lightColor = lightenColor(baseColor, 0.4);
+
+    // Apply tint
+    players[id].setTint(lightColor);
+
+    // Scale sprite
+    const scale = 4;
+    players[id].setScale(scale);
+
+    players[id].body.setSize( 20, 20 );
+
+    // Keep player on screen
+    players[id].setCollideWorldBounds(true);
+
+    // Play default animation
+    players[id].anims.play('down', true);
 }
 
 
