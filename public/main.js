@@ -8,6 +8,8 @@ let config = {
 
 let game = new Phaser.Game(config);
 let cursors;
+// let players = {}; // Phaser rectangles keyed by socket ID
+// let myId = null;
 
 function preload() { }
 
@@ -16,13 +18,14 @@ function create() {
 
     connectToServer(
         (serverPlayers) => { // onInit
+            myId = socket.id;
             for (let id in serverPlayers) {
-                players[id] = this.add.rectangle(serverPlayers[id].x, serverPlayers[id].y, 50, 50, colours[id]);
+                addPlayer(this, id, serverPlayers[id]);
             }
         },
         (id, pos) => { // onUpdate
             if (!players[id]) {
-                players[id] = this.add.rectangle(pos.x, pos.y, 50, 50, colours[id]);
+                addPlayer(this, id, pos);
             } else {
                 players[id].x = pos.x;
                 players[id].y = pos.y;
@@ -32,7 +35,6 @@ function create() {
             if (players[id]) {
                 players[id].destroy();
                 delete players[id];
-                delete colours[id];
             }
         }
     );
@@ -40,12 +42,22 @@ function create() {
 
 function update() {
     if (!myId) return;
-    let speed = 5;
-    let player = players[myId];
-    if (cursors.left.isDown) player.x -= speed;
-    if (cursors.right.isDown) player.x += speed;
-    if (cursors.up.isDown) player.y -= speed;
-    if (cursors.down.isDown) player.y += speed;
+    const speed = 5;
+    const player = players[myId];
+    let moved = false;
 
-    sendMove({ x: player.x, y: player.y });
+    if (cursors.left.isDown)  { player.x -= speed; moved = true; }
+    if (cursors.right.isDown) { player.x += speed; moved = true; }
+    if (cursors.up.isDown)    { player.y -= speed; moved = true; }
+    if (cursors.down.isDown)  { player.y += speed; moved = true; }
+
+    if (moved) {
+        sendMove({ x: player.x, y: player.y });
+    }
+}
+
+// Helper: add a new player rectangle
+function addPlayer(scene, id, info) {
+    const colour = info.colour || 0xffffff; // default white if missing
+    players[id] = scene.add.rectangle(info.x, info.y, 50, 50, Phaser.Display.Color.HexStringToColor(colour).color);
 }
