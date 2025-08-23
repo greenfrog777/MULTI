@@ -83,10 +83,10 @@ function update() {
     if (cursors.down.isDown)  { player.y += speed; moved = true; }
 
     // WASD keys
-    if (wasd.left.isDown) player.x -= speed;
-    if (wasd.right.isDown) player.x += speed;
-    if (wasd.up.isDown) player.y -= speed;
-    if (wasd.down.isDown) player.y += speed;
+    if (wasd.left.isDown)  { player.x -= speed; moved = true; }
+    if (wasd.right.isDown) { player.x += speed; moved = true; }
+    if (wasd.up.isDown)    { player.y -= speed; moved = true; }
+    if (wasd.down.isDown)  { player.y += speed; moved = true; }
 
     if (moved) {
         sendMove({ x: player.x, y: player.y });
