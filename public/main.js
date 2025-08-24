@@ -58,6 +58,14 @@ function create() {
         repeat: -1
     });
 
+    // TO-DO: use idle properly
+    this.anims.create({
+        key: 'idle',
+        frames: this.anims.generateFrameNumbers('player', { start: 8, end: 15 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
 
     cursors = this.input.keyboard.createCursorKeys();
 
@@ -107,23 +115,57 @@ function create() {
 
 function update() {
     if (!myId) return;
-    const speed = 5;
+    const speed = 5; // adjust to taste
     const player = players[myId];
-    let moved = false;
+
+    // stop any previous movement
+    player.body.setVelocity(0);
+
+    // movement flags
+    let moving = false;
+    let animKey = '';
 
     // Arrow keys
-    if (cursors.left.isDown)  { player.x -= speed; moved = true; }
-    if (cursors.right.isDown) { player.x += speed; moved = true; }
-    if (cursors.up.isDown)    { player.y -= speed; moved = true; }
-    if (cursors.down.isDown)  { player.y += speed; moved = true; }
+    if (cursors.left.isDown || wasd.left.isDown) {
+        // player.body.setVelocityX(-speed);
+        player.x -= speed;
+        animKey = 'right';
+        player.setFlipX(true);
+        moving = true;
+    }
+    else if (cursors.right.isDown || wasd.right.isDown) {
+        // player.body.setVelocityX(speed);
+        player.x += speed;
+        animKey = 'right';
+        player.setFlipX(false);        
+        moving = true;
+    }
 
-    // WASD keys
-    if (wasd.left.isDown)  { player.x -= speed; moved = true; }
-    if (wasd.right.isDown) { player.x += speed; moved = true; }
-    if (wasd.up.isDown)    { player.y -= speed; moved = true; }
-    if (wasd.down.isDown)  { player.y += speed; moved = true; }
+    if (cursors.up.isDown || wasd.up.isDown) {
+        // player.body.setVelocityY(-speed);
+        player.y -= speed;
+        animKey = 'up';
+        moving = true;
+    }
+    else if (cursors.down.isDown || wasd.down.isDown) {
+        //player.body.setVelocityY(speed);
+        player.y += speed;
+        animKey = 'down';
+        moving = true;
+    }
 
-    if (moved) {
+    // normalize diagonal speed
+    // player.body.velocity.normalize().scale(speed);
+
+    // animations
+    if (moving) {
+        player.anims.play(animKey, true);
+    } else {
+        player.anims.play('idle', true);
+    }
+
+    // tell server about movement
+    if (moving) {
         sendMove({ x: player.x, y: player.y });
     }
 }
