@@ -27,6 +27,12 @@ function preload()
         frameHeight: 80
     });
 
+    // preload
+    this.load.spritesheet('idle', 'assets/hana/idle.png', {
+        frameWidth: 80,
+        frameHeight: 80
+    });    
+
 }
 
 
@@ -36,7 +42,7 @@ function create() {
     this.physics.world.setBounds(0, 0, config.width, config.height);
 
 
-    // Define animations
+    // Run animations
     this.anims.create({
         key: 'right',
         frames: this.anims.generateFrameNumbers('player', { start: 0, end: 7 }),
@@ -58,10 +64,24 @@ function create() {
         repeat: -1
     });
 
-    // TO-DO: use idle properly
+    // Idle animations
     this.anims.create({
-        key: 'idle',
-        frames: this.anims.generateFrameNumbers('player', { start: 8, end: 15 }),
+        key: 'idle-right',
+        frames: this.anims.generateFrameNumbers('idle', { start: 0, end: 3 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'idle-down',
+        frames: this.anims.generateFrameNumbers('idle', { start: 4, end: 7 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'idle-up',
+        frames: this.anims.generateFrameNumbers('idle', { start: 8, end: 11 }),
         frameRate: 10,
         repeat: -1
     });
@@ -84,11 +104,34 @@ function create() {
             }
         },
         (id, pos) => { // onUpdate
-            if (!players[id]) {
+            if (!players[id]) 
+            {
                 addPlayer(this, id, pos);
-            } else {
+            } 
+            else 
+            {
+                players[id].prevX = players[id].x;
+                players[id].prevY = players[id].y;
                 players[id].x = pos.x;
                 players[id].y = pos.y;
+
+                console.log('update facing', pos.facing);
+                updateFacing(players[id]);
+
+                // Play the correct animation based on facing
+                if ( players[id].facing === 'left' ) 
+                {    
+                    players[id].anims.play('right', true);
+                    players[id].setFlipX(true);
+                }
+                else
+                {
+                    players[id].anims.play(players[id].facing, true);
+                    if ( players[id].facing == 'right' )
+                    {
+                        players[id].setFlipX(false);
+                    }
+                }
             }
         },
         (id) => { // onRemove
@@ -113,6 +156,54 @@ function create() {
 
 }
 
+function updateFacing(player) {
+    const dx = player.x - player.prevX;
+    const dy = player.y - player.prevY;
+
+    if (Math.abs(dx) > Math.abs(dy)) {
+        player.facing = dx < 0 ? 'left' : 'right';
+    } else if (Math.abs(dy) > 0) {
+        player.facing = dy < 0 ? 'up' : 'down';
+    }
+}
+
+function playCorrectAnimation(player) {
+    if (!player.facing) return; // no facing info
+
+    if ( player.x === player.prevX && player.y === player.prevY ) {
+        // play the appropriate idle animation
+        if ( player.facing == 'left' )
+        {
+            player.anims.play('idle-right', true);
+            player.setFlipX(true);
+        } 
+        else    if ( player.facing == 'right' )
+        {
+            player.anims.play('idle-right', true);
+            player.setFlipX(false);
+        }
+        else    
+        {
+            player.anims.play('idle-' + player.facing, true);
+        }
+        return;
+    }
+
+    if ( player.facing === 'left' ) 
+    {    
+        player.anims.play('right', true);
+        player.setFlipX(true);
+    }
+    else
+    {
+        player.anims.play(player.facing, true);
+        if ( player.facing == 'right' )
+        {
+            player.setFlipX(false);
+        }
+    }
+}
+
 function update() {
     if (!myId) return;
     const speed = 5; // adjust to taste
@@ -131,6 +222,7 @@ function update() {
         player.x -= speed;
         animKey = 'right';
         player.setFlipX(true);
+        player.facing = 'left';
         moving = true;
     }
     else if (cursors.right.isDown || wasd.right.isDown) {
@@ -138,6 +230,7 @@ function update() {
         player.x += speed;
         animKey = 'right';
         player.setFlipX(false);        
+        player.facing = 'right';
         moving = true;
     }
 
@@ -145,12 +238,14 @@ function update() {
         // player.body.setVelocityY(-speed);
         player.y -= speed;
         animKey = 'up';
+        player.facing = 'up';
         moving = true;
     }
     else if (cursors.down.isDown || wasd.down.isDown) {
         //player.body.setVelocityY(speed);
         player.y += speed;
         animKey = 'down';
+        player.facing = 'down';
         moving = true;
     }
 
@@ -161,12 +256,34 @@ function update() {
     if (moving) {
         player.anims.play(animKey, true);
     } else {
-        player.anims.play('idle', true);
+        if ( player.facing == 'left' )
+        {
+            player.anims.play('idle-right', true);
+            player.setFlipX(true); 
+        }
+        else
+        {
+            player.anims.play('idle-' + player.facing, true);
+            player.setFlipX(false); 
+        }
     }
 
     // tell server about movement
     if (moving) {
-        sendMove({ x: player.x, y: player.y });
+        sendMove({ x: player.x, y: player.y } );
+    }
+
+    for (let id in players) 
+    {
+        // Not me:
+        if (id === myId) continue;
+
+        const enemy = players[id];
+
+        // updateFacing(enemy);
+        playCorrectAnimation(enemy);
+        enemy.prevX = enemy.x;
+        enemy.prevY = enemy.y;
     }
 }
 
@@ -205,8 +322,10 @@ function addPlayer(scene, id, info) {
     // Keep player on screen
     players[id].setCollideWorldBounds(true);
 
+    players[id].facing = 'down'; // default facing direction
+
     // Play default animation
-    players[id].anims.play('down', true);
+    players[id].anims.play('idle-down', true);
 }
 
 

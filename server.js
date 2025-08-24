@@ -29,9 +29,9 @@ io.on('connection', socket => {
     // Handle movement updates
     socket.on('move', pos => {
         if(players[id]){
-            players[id].x = pos.x;
-            players[id].y = pos.y;
-            io.emit('update', { id, position: { x: pos.x, y: pos.y } }); // colour not sent again
+            players[id].x       = pos.x;
+            players[id].y       = pos.y;
+            io.emit('update', { id, position: { x: pos.x, y: pos.y } });
         }
     });
 
