@@ -8,6 +8,8 @@ let config = {
 
 let game = new Phaser.Game(config);
 let cursors;
+let canShoot = true; // only one arrow at a time
+
 // let players = {}; // Phaser rectangles keyed by socket ID
 // let myId = null;
 
@@ -115,7 +117,7 @@ function create() {
                 players[id].x = pos.x;
                 players[id].y = pos.y;
 
-                console.log('update facing', pos.facing);
+                // console.log('update facing', pos.facing);
                 updateFacing(players[id]);
 
                 // Play the correct animation based on facing
@@ -142,7 +144,14 @@ function create() {
         }
     );
 
-    // --- NEW: Mouse click to shoot arrow ---
+    // Temporary arrow for testing
+    // this.add.sprite(300, 300, 'arrows', 74);
+
+    setupArrowHandlers(this, socket);
+    // setupArrowHandlers(socket);
+
+    /*
+    // --- OLD: Mouse click to shoot arrow ---
     this.input.on('pointerdown', pointer => {
         // Only shoot for the local player
         const player = players[myId];
@@ -153,8 +162,99 @@ function create() {
         // Optionally, send arrow info to server for multiplayer sync
         // network.sendArrow({ x: player.x, y: player.y, angle: Phaser.Math.Angle.Between(player.x, player.y, pointer.x, pointer.y) });
     });
+    */
+
+    // New server driven arrows....
+    this.input.on('pointerdown', pointer => {
+        if (!canShoot) return;
+
+        const player = players[myId];
+        if (!player) return;
+
+        const dx = pointer.worldX - player.x;
+        const dy = pointer.worldY - player.y;
+        const angle = Phaser.Math.RadToDeg(Math.atan2(dy, dx));
+
+        socket.emit('shootArrowNew', { x: player.x, y: player.y, angle });
+        canShoot = false;
+    });
 
 }
+
+
+let arrowList = {}; // key: arrow id, value: Phaser sprite
+
+function setupArrowHandlers(scene, socket) {
+    // When the server spawns a new arrow
+    socket.on("spawnArrow", data => {
+        // create a sprite for the arrow
+
+        console.log('Client told to spawn an arrow with data:', data);
+
+        console.log('New scene is: ', scene);
+
+        const arrowSprite = scene.add.sprite(data.x, data.y, 'arrows', 74);
+        arrowSprite.rotation = Phaser.Math.DegToRad(data.angle ) + Phaser.Math.DegToRad(90); // point correctly
+
+        arrowList[data.ownerId] = arrowSprite;
+
+        
+    });
+
+    // When the server sends updated arrow positions
+    socket.on("updateArrows", data => {
+        const currentIds = new Set();
+
+        const hasArrow = data.some(a => a.ownerId === myId);
+        if (!hasArrow) canShoot = true;
+
+        console.log('Client updating arrows');
+
+        for (let arrowData of data) {
+            currentIds.add(arrowData.ownerId);
+
+            if (arrowList[arrowData.ownerId]) {
+                // update existing arrow
+                
+                console.log('Client update existing arrow');
+
+                //arrowList[arrowData.ownerId].TargetX = arrowData.x;
+                //arrowList[arrowData.ownerId].TargetY = arrowData.y;
+
+                arrowList[arrowData.ownerId].x = arrowData.x;
+                arrowList[arrowData.ownerId].y = arrowData.y;
+            } else {
+
+                console.log('Client spawn arrow as it was missed');
+
+                // optionally, create new arrow if missed spawn event
+                const arrowSprite = scene.add.sprite(arrowData.x, arrowData.y, "arrows", 75);
+                arrowSprite.setOrigin(0.5, 0.5);
+                arrowSprite.rotation = Math.atan2(arrowData.vy, arrowData.vx);
+                arrowList[arrowData.ownerId] = arrowSprite;
+            }
+        }
+
+        // remove arrows that no longer exist on server
+        
+        for (let ownerId in arrowList) {
+            if (!currentIds.has(ownerId)) {
+                arrowList[ownerId].destroy();
+                delete arrowList[ownerId];
+            }
+        }
+    });
+
+    // Optional: handle player hit (e.g., flash or play sound)
+    socket.on("playerHit", data => {
+        const p = players[data.playerId];
+        if (p) {
+            console.log(`Player ${data.playerId} hit! HP: ${data.hp}`);
+            // You could add flash animation or health bar update here
+        }
+    });
+}
+
 
 function updateFacing(player) {
     const dx = player.x - player.prevX;
@@ -285,6 +385,18 @@ function update() {
         enemy.prevX = enemy.x;
         enemy.prevY = enemy.y;
     }
+
+    /*
+    // Update arrow positions smoothly
+    for (let lArrow of arrowList) 
+    {
+        // simple linear interpolation (LERP)
+        lArrow.x += ( lArrow.targetX - lArrow.x ) * 0.2;
+        lArrow.y += ( lArrow.targetY - lArrow.y ) * 0.2;
+
+        console.log('New Arrow position:', lArrow.x, lArrow.y);
+    } 
+      */ 
 }
 
 function lightenColor(hexColor, amount = 0.5) {
@@ -303,6 +415,8 @@ function lightenColor(hexColor, amount = 0.5) {
 
 function addPlayer(scene, id, info) {
     const colour = info.colour || 0xffffff; // default white if missing
+
+    console.log('Add player scene is: ', scene);
 
     // Create physics sprite
     players[id] = scene.physics.add.sprite(info.x, info.y, 'player');

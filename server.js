@@ -35,11 +35,96 @@ io.on('connection', socket => {
         }
     });
 
+    socket.on('shootArrowNew', data => {
+
+        console.log('Server received shootArrowNew from', socket.id, 'data:', data);
+
+        const playerArrows = arrows.filter(a => a.ownerId === socket.id);
+        if (playerArrows.length > 0) return; // already shooting
+
+        console.log('Spawning arrow for', socket.id, 'at', data.x, data.y, 'angle', data.angle);
+
+        spawnArrow(socket.id, data.x, data.y, data.angle);
+    });    
+
     // Handle disconnection
     socket.on('disconnect', () => {
         delete players[id];
         io.emit('remove', { id });
     });
 });
+
+// START OF NEW CODE
+
+const ARROW_SPEED = 10;
+const ARROW_RADIUS = 10;    // adjust to match your sprite
+const PLAYER_RADIUS = 20;   // approximate for collision
+const WORLD_WIDTH = 800;
+const WORLD_HEIGHT = 600;
+
+let arrows = []; // array of active arrows
+
+// Call this when a player shoots
+function spawnArrow(ownerId, x, y, angle) {
+    const rad = angle * Math.PI / 180; // convert degrees to radians
+    arrows.push({
+        ownerId,
+        x, y,
+        vx: Math.cos(rad) * ARROW_SPEED,
+        vy: Math.sin(rad) * ARROW_SPEED,
+        angle // send angle to client
+    });
+
+    // inform clients a new arrow exists
+    io.emit("spawnArrow", arrows[arrows.length - 1]);
+}
+
+// Tick loop for arrows
+setInterval(() => {
+    for (let arrow of arrows) {
+        // 1. Move arrow
+        arrow.x += arrow.vx;
+        arrow.y += arrow.vy;
+
+        // 2. Check world bounds
+        if (arrow.x < 0 || arrow.x > WORLD_WIDTH ||
+            arrow.y < 0 || arrow.y > WORLD_HEIGHT) {
+            arrow.dead = true;
+
+            console.log('Arrow killed for going out of bounds:', arrow);
+
+            continue;
+        }
+
+        // 3. Check collision with players
+        for (let id in players) {
+            const p = players[id];
+
+            if (id === arrow.ownerId) continue; // don't hit self
+
+            const dx = arrow.x - p.x;
+            const dy = arrow.y - p.y;
+            const distSq = dx*dx + dy*dy;
+            if (distSq < (ARROW_RADIUS + PLAYER_RADIUS) ** 2) {
+                arrow.dead = true;
+                p.hp -= 1;  // apply damage
+
+                console.log('Player hit');
+
+                io.emit("playerHit", { playerId: p.id, hp: p.hp });
+                break;
+            }
+        }
+    }
+
+    // Remove dead arrows
+    arrows = arrows.filter(a => !a.dead);
+
+    // 4. Broadcast updated positions
+    io.emit("updateArrows", arrows);
+
+}, 1000 / 60); // 1 Hz tick
+
+// END OF NEW CODE
 
 server.listen(3000, () => console.log('Server running on http://localhost:3000'));
