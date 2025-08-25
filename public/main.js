@@ -223,9 +223,16 @@ function setupArrowHandlers(scene, socket) {
     // Optional: handle player hit (e.g., flash or play sound)
     socket.on("playerHit", data => {
         const p = players[data.playerId];
+
+        console.log('Client: Player hit, now their hp is ', data.hp , ' id is ' , data.playerId );
+
         if (p) {
             // console.log(`Player ${data.playerId} hit! HP: ${data.hp}`);
             // You could add flash animation or health bar update here
+
+            console.log('Client: Player hit, now their hp is ', data.hp);
+
+            p.healthPoints = data.hp;
         }
     });
 }
@@ -278,6 +285,77 @@ function playCorrectAnimation(player) {
         }
     }
 }
+
+function drawHealthBar(player) {
+    const sprite = player;
+    const barWidth = 35;
+    const barHeight = 3;
+    const healthBar = player.healthBar;
+    const healthPoints = player.healthPoints;
+    const maxHp = 5;
+
+    // position above head
+    const x = sprite.x - barWidth / 2;
+    const y = sprite.y - sprite.height / 2 - 12;
+
+    healthBar.clear();
+
+/*
+    // black border
+    healthBar.fillStyle(0x000000);
+    healthBar.fillRect(x - 1, y - 1, barWidth + 2, barHeight + 2);
+
+    // pick colour based on health %
+    const healthPercent = healthPoints / maxHp;
+    let colour = 0x00ff00; // default green
+    if (healthPercent < 0.3) {
+        colour = 0xff0000; // red
+    } else if (healthPercent < 0.6) {
+        colour = 0xffff00; // yellow
+    }
+
+    // health fill
+    const healthWidth = healthPercent * barWidth;
+    healthBar.fillStyle(colour);
+    healthBar.fillRect(x, y, healthWidth, barHeight);
+*/
+
+    const ratio = healthPoints / maxHp; // 1.0 = full, 0.0 = dead
+
+    // interpolate colour: green (0,255,0) → yellow (255,255,0) → red (255,0,0)
+    let r, g, b;
+    if (ratio > 0.5) {
+        // from green → yellow
+        const t = (1 - ratio) * 2;  // 0 at full hp, 1 at 50%
+        r = Math.floor(255 * t);
+        g = 255;
+        b = 0;
+    } else {
+        // from yellow → red
+        const t = ratio * 2;  // 1 at 50%, 0 at 0%
+        r = 255;
+        g = Math.floor(255 * t);
+        b = 0;
+    }
+
+    const color = Phaser.Display.Color.GetColor(r, g, b);
+
+    // redraw health bar
+    //const barWidth = 40;
+    //const barHeight = 6;
+    const healthWidth = Math.floor(barWidth * ratio);
+
+    healthBar.clear();
+    healthBar.fillStyle(color);
+    healthBar.fillRect(
+        sprite.x - barWidth / 2,
+        sprite.y - 40,  // above the sprite
+        healthWidth,
+        barHeight
+    );
+
+}
+
 
 function update() {
     if (!myId) return;
@@ -367,6 +445,11 @@ function update() {
         arrow.x += (arrow.targetX - arrow.x) * 0.2;
         arrow.y += (arrow.targetY - arrow.y) * 0.2;
     }
+
+    // health bars
+    for (let id in players) {
+        drawHealthBar(players[id]);
+    }
 }
 
 function lightenColor(hexColor, amount = 0.5) {
@@ -391,6 +474,7 @@ function addPlayer(scene, id, info) {
 
     const baseColor = Phaser.Display.Color.HexStringToColor(colour).color;
     const lightColor = lightenColor(baseColor, 0.4);
+    const healthBar = scene.add.graphics();
 
     // Apply tint
     players[id].setTint(lightColor);
@@ -408,6 +492,9 @@ function addPlayer(scene, id, info) {
 
     // Play default animation
     players[id].anims.play('idle-down', true);
+
+    players[id].healthBar = healthBar;
+    players[id].healthPoints = 5;
 }
 
 

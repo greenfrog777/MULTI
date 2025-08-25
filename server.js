@@ -18,7 +18,7 @@ io.on('connection', socket => {
     const colour = colours[Object.keys(players).length % colours.length];
 
     // Initial position and colour
-    players[id] = { x: 400, y: 300, colour };
+    players[id] = { x: 400, y: 300, colour, hp: 5 };
 
     // Send all current players to the new client
     socket.emit('init', { players, myId: id });
@@ -120,9 +120,9 @@ setInterval(() => {
                 arrow.dead = true;
                 p.hp -= 1;  // apply damage
 
-                console.log('Player hit');
+                console.log('Player hit, now their hp is ', p.hp);
 
-                io.emit("playerHit", { playerId: p.id, hp: p.hp });
+                io.emit("playerHit", { playerId: id, hp: p.hp });
                 break;
             }
         }
