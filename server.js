@@ -37,12 +37,12 @@ io.on('connection', socket => {
 
     socket.on('shootArrowNew', data => {
 
-        console.log('Server received shootArrowNew from', socket.id, 'data:', data);
+        // console.log('Server received shootArrowNew from', socket.id, 'data:', data);
 
         const playerArrows = arrows.filter(a => a.ownerId === socket.id);
         if (playerArrows.length > 0) return; // already shooting
 
-        console.log('Spawning arrow for', socket.id, 'at', data.x, data.y, 'angle', data.angle);
+        // console.log('Spawning arrow for', socket.id, 'at', data.x, data.y, 'angle', data.angle);
 
         spawnArrow(socket.id, data.x, data.y, data.angle);
     });    
@@ -56,7 +56,8 @@ io.on('connection', socket => {
 
 // START OF NEW CODE
 
-const ARROW_SPEED = 10;
+const SERVER_LOOP_HZ = 20;
+const ARROW_SPEED = 30 * SERVER_LOOP_HZ;
 const ARROW_RADIUS = 10;    // adjust to match your sprite
 const PLAYER_RADIUS = 20;   // approximate for collision
 const WORLD_WIDTH = 800;
@@ -79,19 +80,29 @@ function spawnArrow(ownerId, x, y, angle) {
     io.emit("spawnArrow", arrows[arrows.length - 1]);
 }
 
+let lastTickTime = Date.now();
+
 // Tick loop for arrows
 setInterval(() => {
+
+    const now = Date.now();
+    const deltaTime = (now - lastTickTime) / 1000;
+    lastTickTime = now;
+
     for (let arrow of arrows) {
         // 1. Move arrow
-        arrow.x += arrow.vx;
-        arrow.y += arrow.vy;
+        //arrow.x += arrow.vx;
+        //arrow.y += arrow.vy;
+
+        arrow.x += arrow.vx * deltaTime;     // 🟢 time-based movement
+        arrow.y += arrow.vy * deltaTime;     // 🟢 time-based movement        
 
         // 2. Check world bounds
         if (arrow.x < 0 || arrow.x > WORLD_WIDTH ||
             arrow.y < 0 || arrow.y > WORLD_HEIGHT) {
             arrow.dead = true;
 
-            console.log('Arrow killed for going out of bounds:', arrow);
+            // console.log('Arrow killed for going out of bounds:', arrow);
 
             continue;
         }
@@ -123,7 +134,7 @@ setInterval(() => {
     // 4. Broadcast updated positions
     io.emit("updateArrows", arrows);
 
-}, 1000 / 60); // 1 Hz tick
+}, 1000 / SERVER_LOOP_HZ ); // 20 Hz tick
 
 // END OF NEW CODE
 

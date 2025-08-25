@@ -150,20 +150,6 @@ function create() {
     setupArrowHandlers(this, socket);
     // setupArrowHandlers(socket);
 
-    /*
-    // --- OLD: Mouse click to shoot arrow ---
-    this.input.on('pointerdown', pointer => {
-        // Only shoot for the local player
-        const player = players[myId];
-        if (!player.activeArrow) { 
-            shootArrow(this, player, pointer); // uses frame 74
-        }
-
-        // Optionally, send arrow info to server for multiplayer sync
-        // network.sendArrow({ x: player.x, y: player.y, angle: Phaser.Math.Angle.Between(player.x, player.y, pointer.x, pointer.y) });
-    });
-    */
-
     // New server driven arrows....
     this.input.on('pointerdown', pointer => {
         if (!canShoot) return;
@@ -188,55 +174,44 @@ function setupArrowHandlers(scene, socket) {
     // When the server spawns a new arrow
     socket.on("spawnArrow", data => {
         // create a sprite for the arrow
-
-        console.log('Client told to spawn an arrow with data:', data);
-
-        console.log('New scene is: ', scene);
-
         const arrowSprite = scene.add.sprite(data.x, data.y, 'arrows', 74);
         arrowSprite.rotation = Phaser.Math.DegToRad(data.angle ) + Phaser.Math.DegToRad(90); // point correctly
-
+        arrowSprite.targetX = data.x;
+        arrowSprite.targetY = data.y;
+        arrowSprite.vx = data.vx || 0;
+        arrowSprite.vy = data.vy || 0;
         arrowList[data.ownerId] = arrowSprite;
-
-        
     });
 
     // When the server sends updated arrow positions
     socket.on("updateArrows", data => {
         const currentIds = new Set();
-
         const hasArrow = data.some(a => a.ownerId === myId);
         if (!hasArrow) canShoot = true;
 
-        console.log('Client updating arrows');
-
         for (let arrowData of data) {
             currentIds.add(arrowData.ownerId);
-
             if (arrowList[arrowData.ownerId]) {
                 // update existing arrow
-                
-                console.log('Client update existing arrow');
-
-                //arrowList[arrowData.ownerId].TargetX = arrowData.x;
-                //arrowList[arrowData.ownerId].TargetY = arrowData.y;
-
-                arrowList[arrowData.ownerId].x = arrowData.x;
-                arrowList[arrowData.ownerId].y = arrowData.y;
+                let arrow = arrowList[arrowData.ownerId];
+                // Interpolate position for smoothing
+                arrow.targetX = arrowData.x;
+                arrow.targetY = arrowData.y;
+                arrow.vx = arrowData.vx;
+                arrow.vy = arrowData.vy;
             } else {
-
-                console.log('Client spawn arrow as it was missed');
-
-                // optionally, create new arrow if missed spawn event
+                // create new arrow if missed spawn event
                 const arrowSprite = scene.add.sprite(arrowData.x, arrowData.y, "arrows", 75);
                 arrowSprite.setOrigin(0.5, 0.5);
                 arrowSprite.rotation = Math.atan2(arrowData.vy, arrowData.vx);
+                arrowSprite.targetX = arrowData.x;
+                arrowSprite.targetY = arrowData.y;
+                arrowSprite.vx = arrowData.vx;
+                arrowSprite.vy = arrowData.vy;
                 arrowList[arrowData.ownerId] = arrowSprite;
             }
         }
-
         // remove arrows that no longer exist on server
-        
         for (let ownerId in arrowList) {
             if (!currentIds.has(ownerId)) {
                 arrowList[ownerId].destroy();
@@ -249,7 +224,7 @@ function setupArrowHandlers(scene, socket) {
     socket.on("playerHit", data => {
         const p = players[data.playerId];
         if (p) {
-            console.log(`Player ${data.playerId} hit! HP: ${data.hp}`);
+            // console.log(`Player ${data.playerId} hit! HP: ${data.hp}`);
             // You could add flash animation or health bar update here
         }
     });
@@ -386,17 +361,12 @@ function update() {
         enemy.prevY = enemy.y;
     }
 
-    /*
-    // Update arrow positions smoothly
-    for (let lArrow of arrowList) 
-    {
-        // simple linear interpolation (LERP)
-        lArrow.x += ( lArrow.targetX - lArrow.x ) * 0.2;
-        lArrow.y += ( lArrow.targetY - lArrow.y ) * 0.2;
-
-        console.log('New Arrow position:', lArrow.x, lArrow.y);
-    } 
-      */ 
+    // Arrow interpolation only (no client-side velocity)
+    for (let ownerId in arrowList) {
+        let arrow = arrowList[ownerId];
+        arrow.x += (arrow.targetX - arrow.x) * 0.2;
+        arrow.y += (arrow.targetY - arrow.y) * 0.2;
+    }
 }
 
 function lightenColor(hexColor, amount = 0.5) {
@@ -415,8 +385,6 @@ function lightenColor(hexColor, amount = 0.5) {
 
 function addPlayer(scene, id, info) {
     const colour = info.colour || 0xffffff; // default white if missing
-
-    console.log('Add player scene is: ', scene);
 
     // Create physics sprite
     players[id] = scene.physics.add.sprite(info.x, info.y, 'player');
@@ -442,6 +410,11 @@ function addPlayer(scene, id, info) {
     players[id].anims.play('idle-down', true);
 }
 
+
+/*
+
+// Old arrow shooting code - now replaced with server-driven version
+// But keep for reference - it was smooth... maybe because of using velocity?
 
 function shootArrow(scene, player, pointer) {
     if (player.activeArrow) return; // only one arrow at a time
@@ -469,3 +442,4 @@ function shootArrow(scene, player, pointer) {
     });
 }
 
+*/
