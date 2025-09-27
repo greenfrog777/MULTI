@@ -156,6 +156,7 @@ function create() {
 
         const player = players[myId];
         if (!player) return;
+        if (player.dead) return;
 
         const dx = pointer.worldX - player.x;
         const dy = pointer.worldY - player.y;
@@ -224,13 +225,13 @@ function setupArrowHandlers(scene, socket) {
     socket.on("playerHit", data => {
         const p = players[data.playerId];
 
-        console.log('Client: Player hit, now their hp is ', data.hp , ' id is ' , data.playerId );
+        // console.log('Client: Player hit, now their hp is ', data.hp , ' id is ' , data.playerId );
 
         if (p) {
             // console.log(`Player ${data.playerId} hit! HP: ${data.hp}`);
             // You could add flash animation or health bar update here
 
-            console.log('Client: Player hit, now their hp is ', data.hp);
+            // console.log('Client: Player hit, now their hp is ', data.hp);
 
             p.healthPoints = data.hp;
         }
@@ -286,7 +287,37 @@ function playCorrectAnimation(player) {
     }
 }
 
+function handleDeath(player) {
+
+    player.dead = true;
+    // Fade out sprite + health bar over 500ms
+    player.scene.tweens.add({
+        targets: [player, player.healthBar],
+        alpha: 0,
+        duration: 500,
+        onComplete: () => {
+
+            // stop movement & disable physics simulation
+            player.body.stop();
+            player.body.enable = false;
+
+            // hide and mark inactive so Phaser ignores it in updates
+            player.setVisible(false);
+            player.setActive(false);        
+            
+            // optionally move it off-screen so nothing else collides with the sprite visually
+            player.x = -9999;
+            player.y = -9999;            
+
+            player.healthBar.destroy();
+        }
+    });
+}
+
 function drawHealthBar(player) {
+
+    if ( player.dead ) return;
+
     const sprite = player;
     const barWidth = 35;
     const barHeight = 3;
@@ -354,6 +385,11 @@ function drawHealthBar(player) {
         barHeight
     );
 
+    if ( healthPoints == 0 )
+    {
+        handleDeath(player);
+    }
+
 }
 
 
@@ -362,68 +398,71 @@ function update() {
     const speed = 5; // adjust to taste
     const player = players[myId];
 
-    // stop any previous movement
-    player.body.setVelocity(0);
+    if ( player.dead == false ) 
+    {
+        // stop any previous movement
+        player.body.setVelocity(0);
 
-    // movement flags
-    let moving = false;
-    let animKey = '';
+        // movement flags
+        let moving = false;
+        let animKey = '';
 
-    // Arrow keys
-    if (cursors.left.isDown || wasd.left.isDown) {
-        // player.body.setVelocityX(-speed);
-        player.x -= speed;
-        animKey = 'right';
-        player.setFlipX(true);
-        player.facing = 'left';
-        moving = true;
-    }
-    else if (cursors.right.isDown || wasd.right.isDown) {
-        // player.body.setVelocityX(speed);
-        player.x += speed;
-        animKey = 'right';
-        player.setFlipX(false);        
-        player.facing = 'right';
-        moving = true;
-    }
-
-    if (cursors.up.isDown || wasd.up.isDown) {
-        // player.body.setVelocityY(-speed);
-        player.y -= speed;
-        animKey = 'up';
-        player.facing = 'up';
-        moving = true;
-    }
-    else if (cursors.down.isDown || wasd.down.isDown) {
-        //player.body.setVelocityY(speed);
-        player.y += speed;
-        animKey = 'down';
-        player.facing = 'down';
-        moving = true;
-    }
-
-    // normalize diagonal speed
-    // player.body.velocity.normalize().scale(speed);
-
-    // animations
-    if (moving) {
-        player.anims.play(animKey, true);
-    } else {
-        if ( player.facing == 'left' )
-        {
-            player.anims.play('idle-right', true);
-            player.setFlipX(true); 
+        // Arrow keys
+        if (cursors.left.isDown || wasd.left.isDown) {
+            // player.body.setVelocityX(-speed);
+            player.x -= speed;
+            animKey = 'right';
+            player.setFlipX(true);
+            player.facing = 'left';
+            moving = true;
         }
-        else
-        {
-            player.anims.play('idle-' + player.facing, true);
-            player.setFlipX(false); 
+        else if (cursors.right.isDown || wasd.right.isDown) {
+            // player.body.setVelocityX(speed);
+            player.x += speed;
+            animKey = 'right';
+            player.setFlipX(false);        
+            player.facing = 'right';
+            moving = true;
         }
-    }
 
-    // tell server about movement
-    if (moving) {
-        sendMove({ x: player.x, y: player.y } );
+        if (cursors.up.isDown || wasd.up.isDown) {
+            // player.body.setVelocityY(-speed);
+            player.y -= speed;
+            animKey = 'up';
+            player.facing = 'up';
+            moving = true;
+        }
+        else if (cursors.down.isDown || wasd.down.isDown) {
+            //player.body.setVelocityY(speed);
+            player.y += speed;
+            animKey = 'down';
+            player.facing = 'down';
+            moving = true;
+        }
+
+        // normalize diagonal speed
+        // player.body.velocity.normalize().scale(speed);
+
+        // animations
+        if (moving) {
+            player.anims.play(animKey, true);
+        } else {
+            if ( player.facing == 'left' )
+            {
+                player.anims.play('idle-right', true);
+                player.setFlipX(true); 
+            }
+            else
+            {
+                player.anims.play('idle-' + player.facing, true);
+                player.setFlipX(false); 
+            }
+        }
+
+        // tell server about movement
+        if (moving) {
+            sendMove({ x: player.x, y: player.y } );
+        }
     }
 
     for (let id in players) 
@@ -447,7 +486,13 @@ function update() {
     }
 
     // health bars
-    for (let id in players) {
+    for (let id in players) 
+    {
+        if ( players[id].dead ) 
+        {
+            continue;
+        }
+        
         drawHealthBar(players[id]);
     }
 }
@@ -495,6 +540,8 @@ function addPlayer(scene, id, info) {
 
     players[id].healthBar = healthBar;
     players[id].healthPoints = 5;
+    players[id].scene = scene;
+    players[id].dead = false;
 }
 
 
