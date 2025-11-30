@@ -2,6 +2,15 @@ let socket, myId, players = {}, playerColours = {};
 
 function connectToServer(onInit, onUpdate, onRemove) {
     socket = io();
+    
+    // If a player name was entered before connecting, tell the server once connected
+    socket.on('connect', () => {
+        // expose socket to window so index overlay can use it
+        window.socket = socket;
+        if (window.pendingPlayerName) {
+            socket.emit('join', window.pendingPlayerName);
+        }
+    });
 
     // Initial setup: called once when connecting
     socket.on('init', data => {

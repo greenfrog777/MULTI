@@ -43,7 +43,6 @@ function create() {
     // Stop players leaving the game area
     this.physics.world.setBounds(0, 0, config.width, config.height);
 
-
     // Run animations
     this.anims.create({
         key: 'right',
@@ -98,76 +97,88 @@ function create() {
         right: Phaser.Input.Keyboard.KeyCodes.D
     });
 
-    connectToServer(
-        (serverPlayers) => { // onInit
-            myId = socket.id;
-            for (let id in serverPlayers) {
-                addPlayer(this, id, serverPlayers[id]);
-            }
-        },
-        (id, pos) => { // onUpdate
-            if (!players[id]) 
-            {
-                addPlayer(this, id, pos);
-            } 
-            else 
-            {
-                players[id].prevX = players[id].x;
-                players[id].prevY = players[id].y;
-                players[id].x = pos.x;
-                players[id].y = pos.y;
+    // Do NOT connect to the server until the player clicks Join.
+    // Expose a startGame(name) function on window that the join overlay will call.
+    window.startGame = (playerName) => {
+        // remember selected name so network.connectToServer can emit it on connect
+        window.pendingPlayerName = playerName;
 
-                // console.log('update facing', pos.facing);
-                updateFacing(players[id]);
-
-                // Play the correct animation based on facing
-                if ( players[id].facing === 'left' ) 
-                {    
-                    players[id].anims.play('right', true);
-                    players[id].setFlipX(true);
+        connectToServer(
+            (serverPlayers) => { // onInit
+                myId = socket.id;
+                for (let id in serverPlayers) {
+                    addPlayer(this, id, serverPlayers[id]);
                 }
-                else
+            },
+            (id, pos) => { // onUpdate
+                if (!players[id]) 
                 {
-                    players[id].anims.play(players[id].facing, true);
-                    if ( players[id].facing == 'right' )
+                    addPlayer(this, id, pos);
+                } 
+                else 
+                {
+                    players[id].prevX = players[id].x;
+                    players[id].prevY = players[id].y;
+                    players[id].x = pos.x;
+                    players[id].y = pos.y;
+
+                    // update name if provided
+                    if (pos.name && players[id].nameText) {
+                        players[id].nameText.setText(pos.name);
+                    }
+
+                    // console.log('update facing', pos.facing);
+                    updateFacing(players[id]);
+
+                    // Play the correct animation based on facing
+                    if ( players[id].facing === 'left' ) 
+                    {    
+                        players[id].anims.play('right', true);
+                        players[id].setFlipX(true);
+                    }
+                    else
                     {
-                        players[id].setFlipX(false);
+                        players[id].anims.play(players[id].facing, true);
+                        if ( players[id].facing == 'right' )
+                        {
+                            players[id].setFlipX(false);
+                        }
                     }
                 }
+            },
+            (id) => { // onRemove
+                if (players[id]) {
+                    // clean up sprite and nameText
+                    if (players[id].nameText) players[id].nameText.destroy();
+                    players[id].destroy();
+                    delete players[id];
+                }
             }
-        },
-        (id) => { // onRemove
-            if (players[id]) {
-                players[id].destroy();
-                delete players[id];
-            }
-        }
-    );
+        );
 
-    // Temporary arrow for testing
-    // this.add.sprite(300, 300, 'arrows', 74);
+        // Setup arrow handlers now that socket exists
+        setupArrowHandlers(this, socket);
 
-    setupArrowHandlers(this, socket);
-    // setupArrowHandlers(socket);
+        // New server driven arrows: only register pointer handler after join
+        this.input.on('pointerdown', pointer => {
+            if (!canShoot) return;
 
-    // New server driven arrows....
-    this.input.on('pointerdown', pointer => {
-        if (!canShoot) return;
+            const player = players[myId];
+            if (!player) return;
+            if (player.dead) return;
 
-        const player = players[myId];
-        if (!player) return;
-        if (player.dead) return;
+            const dx = pointer.worldX - player.x;
+            const dy = pointer.worldY - player.y;
+            const angle = Phaser.Math.RadToDeg(Math.atan2(dy, dx));
 
-        const dx = pointer.worldX - player.x;
-        const dy = pointer.worldY - player.y;
-        const angle = Phaser.Math.RadToDeg(Math.atan2(dy, dx));
+            socket.emit('shootArrowNew', { x: player.x, y: player.y, angle });
+            canShoot = false;
+        });
+    };
 
-        socket.emit('shootArrowNew', { x: player.x, y: player.y, angle });
-        canShoot = false;
-    });
-
+    // create() ends here; the actual connection to the server is started when
+    // window.startGame(name) is called by the join overlay.
 }
-
 
 let arrowList = {}; // key: arrow id, value: Phaser sprite
 
@@ -287,6 +298,19 @@ function playCorrectAnimation(player) {
     }
 }
 
+// Helper: detect whether the user is currently typing in an <input> or <textarea>
+// Moved out of `update()` to avoid allocating a new function every frame.
+function isTextInputActive() {
+    try {
+        const el = document.activeElement;
+        if (!el) return false;
+        const tag = el.tagName && el.tagName.toLowerCase();
+        return tag === 'input' || tag === 'textarea' || el.isContentEditable;
+    } catch (e) {
+        return false;
+    }
+}
+
 function handleDeath(player) {
 
     player.dead = true;
@@ -397,71 +421,72 @@ function update() {
     if (!myId) return;
     const speed = 5; // adjust to taste
     const player = players[myId];
+    // use top-level helper to avoid per-frame allocations
 
     if ( player.dead == false ) 
     {
-        // stop any previous movement
-        player.body.setVelocity(0);
-
-        // movement flags
-        let moving = false;
-        let animKey = '';
-
-        // Arrow keys
-        if (cursors.left.isDown || wasd.left.isDown) {
-            // player.body.setVelocityX(-speed);
-            player.x -= speed;
-            animKey = 'right';
-            player.setFlipX(true);
-            player.facing = 'left';
-            moving = true;
-        }
-        else if (cursors.right.isDown || wasd.right.isDown) {
-            // player.body.setVelocityX(speed);
-            player.x += speed;
-            animKey = 'right';
-            player.setFlipX(false);        
-            player.facing = 'right';
-            moving = true;
-        }
-
-        if (cursors.up.isDown || wasd.up.isDown) {
-            // player.body.setVelocityY(-speed);
-            player.y -= speed;
-            animKey = 'up';
-            player.facing = 'up';
-            moving = true;
-        }
-        else if (cursors.down.isDown || wasd.down.isDown) {
-            //player.body.setVelocityY(speed);
-            player.y += speed;
-            animKey = 'down';
-            player.facing = 'down';
-            moving = true;
-        }
-
-        // normalize diagonal speed
-        // player.body.velocity.normalize().scale(speed);
-
-        // animations
-        if (moving) {
-            player.anims.play(animKey, true);
+        // If the user is typing into an input (e.g. the join name box), do not interpret
+        // WASD / arrow keys as movement. This prevents characters like 'a' from being
+        // swallowed by the game.
+        if (isTextInputActive()) {
+            // ensure we don't send movement while typing
         } else {
-            if ( player.facing == 'left' )
-            {
-                player.anims.play('idle-right', true);
-                player.setFlipX(true); 
-            }
-            else
-            {
-                player.anims.play('idle-' + player.facing, true);
-                player.setFlipX(false); 
-            }
-        }
+            // stop any previous movement
+            player.body.setVelocity(0);
 
-        // tell server about movement
-        if (moving) {
-            sendMove({ x: player.x, y: player.y } );
+            // movement flags
+            let moving = false;
+            let animKey = '';
+
+            // Arrow keys / WASD
+            if (cursors.left.isDown || wasd.left.isDown) {
+                player.x -= speed;
+                animKey = 'right';
+                player.setFlipX(true);
+                player.facing = 'left';
+                moving = true;
+            }
+            else if (cursors.right.isDown || wasd.right.isDown) {
+                player.x += speed;
+                animKey = 'right';
+                player.setFlipX(false);        
+                player.facing = 'right';
+                moving = true;
+            }
+
+            if (cursors.up.isDown || wasd.up.isDown) {
+                player.y -= speed;
+                animKey = 'up';
+                player.facing = 'up';
+                moving = true;
+            }
+            else if (cursors.down.isDown || wasd.down.isDown) {
+                player.y += speed;
+                animKey = 'down';
+                player.facing = 'down';
+                moving = true;
+            }
+
+            // animations
+            if (moving) {
+                player.anims.play(animKey, true);
+            } else {
+                if ( player.facing == 'left' )
+                {
+                    player.anims.play('idle-right', true);
+                    player.setFlipX(true); 
+                }
+                else
+                {
+                    player.anims.play('idle-' + player.facing, true);
+                    player.setFlipX(false); 
+                }
+            }
+
+            // tell server about movement
+            if (moving) {
+                sendMove({ x: player.x, y: player.y } );
+            }
         }
     }
 
@@ -494,6 +519,19 @@ function update() {
         }
         
         drawHealthBar(players[id]);
+    }
+
+    // Update name text positions (place the name below the sprite at the same distance
+    // the health bar is above the sprite: sprite.y +/- sprite.height/2 + 12)
+    for (let id in players) {
+        const p = players[id];
+        if (!p) continue;
+        if (p.nameText) {
+            p.nameText.x = p.x;
+            // Use sprite.height (frame height) so offset matches drawHealthBar's calculation
+            p.nameText.y = p.y + (p.height / 2) + 2;
+            p.nameText.setVisible(!p.dead);
+        }
     }
 }
 
@@ -542,6 +580,18 @@ function addPlayer(scene, id, info) {
     players[id].healthPoints = 5;
     players[id].scene = scene;
     players[id].dead = false;
+
+    // Name text (may be provided in info.name)
+    const name = info.name || '';
+    // Position name under the sprite at same distance the health bar is above the sprite
+    players[id].nameText = scene.add.text(info.x, info.y + (players[id].height / 2) + 2, name, {
+        font: '14px Arial',
+        fill: '#ffffff',
+        stroke: '#000000',
+        strokeThickness: 3,
+        align: 'center'
+    }).setOrigin(0.5, 0);
+    players[id].nameText.setDepth(10);
 }
 
 

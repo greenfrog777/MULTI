@@ -17,25 +17,43 @@ io.on('connection', socket => {
     // Assign colour based on number of existing players
     const colour = colours[Object.keys(players).length % colours.length];
 
-    // Initial position and colour
-    players[id] = { x: 400, y: 300, colour, hp: 5, dead: false };
-
-    // Send all current players to the new client
-    socket.emit('init', { players, myId: id });
-
-    // Notify all other clients about the new player
-    socket.broadcast.emit('update', { id, position: players[id] });
+    // Do not create the player record yet. Wait for the client to send a 'join' event
+    // containing the player's chosen name. This prevents showing a default player
+    // before the user has entered their name.
 
     // Handle movement updates
     socket.on('move', pos => {
         if(players[id]){
             players[id].x       = pos.x;
             players[id].y       = pos.y;
-            io.emit('update', { id, position: { x: pos.x, y: pos.y } });
+            io.emit('update', { id, position: { x: pos.x, y: pos.y, name: players[id].name, colour: players[id].colour } });
+        }
+    });
+
+    // Handle name/join event from client
+    socket.on('join', name => {
+        const clean = String(name || '').slice(0, 32) || ('Player' + id.slice(0,4));
+
+        if (!players[id]) {
+            // create player record now that we have a name
+            const colour = colours[Object.keys(players).length % colours.length];
+            players[id] = { x: 400, y: 300, colour, hp: 5, dead: false, name: clean };
+
+            // Send all current players to the new client
+            socket.emit('init', { players, myId: id });
+
+            // Notify all other clients about the new player
+            socket.broadcast.emit('update', { id, position: players[id] });
+        } else {
+            // If player record already exists (reconnect), just update the name
+            players[id].name = clean;
+            io.emit('update', { id, position: { x: players[id].x, y: players[id].y, name: players[id].name, colour: players[id].colour } });
         }
     });
 
     socket.on('shootArrowNew', data => {
+        // ignore if player hasn't joined yet
+        if (!players[id]) return;
 
         // console.log('Server received shootArrowNew from', socket.id, 'data:', data);
 
