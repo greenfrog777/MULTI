@@ -526,9 +526,15 @@ function update() {
     for (let id in players) {
         const p = players[id];
         if (!p) continue;
+        
+        // Clamp sprite position to world bounds
+        const margin = 40;
+        p.x = Phaser.Math.Clamp(p.x, margin, config.width - margin);
+        p.y = Phaser.Math.Clamp(p.y, margin, config.height - margin);
+        
+        // Text follows sprite
         if (p.nameText) {
             p.nameText.x = p.x;
-            // Use sprite.height (frame height) so offset matches drawHealthBar's calculation
             p.nameText.y = p.y + (p.height / 2) + 2;
             p.nameText.setVisible(!p.dead);
         }
@@ -568,9 +574,6 @@ function addPlayer(scene, id, info) {
 
     players[id].body.setSize( 20, 20 );
 
-    // Keep player on screen
-    players[id].setCollideWorldBounds(true);
-
     players[id].facing = 'down'; // default facing direction
 
     // Play default animation
@@ -583,7 +586,7 @@ function addPlayer(scene, id, info) {
 
     // Name text (may be provided in info.name)
     const name = info.name || '';
-    // Position name under the sprite at same distance the health bar is above the sprite
+    // Position name under the sprite
     players[id].nameText = scene.add.text(info.x, info.y + (players[id].height / 2) + 2, name, {
         font: '14px Arial',
         fill: '#ffffff',
