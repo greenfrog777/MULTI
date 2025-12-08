@@ -350,8 +350,13 @@ function drawHealthBar(player) {
     const maxHp = 5;
 
     // position above head
-    const x = sprite.x - barWidth / 2;
-    const y = sprite.y - sprite.height / 2 - 12;
+    let x = sprite.x - barWidth / 2;
+    let y = sprite.y - sprite.height / 2 - 12;
+    
+    // Clamp bar position to world bounds
+    const margin = 20;
+    x = Phaser.Math.Clamp(x, margin, config.width - margin);
+    y = Phaser.Math.Clamp(y, margin, config.height - margin);
 
     healthBar.clear();
 
@@ -368,7 +373,7 @@ function drawHealthBar(player) {
     } else if (healthPercent < 0.6) {
         colour = 0xffff00; // yellow
     }
-
+a
     // health fill
     const healthWidth = healthPercent * barWidth;
     healthBar.fillStyle(colour);
@@ -510,6 +515,15 @@ function update() {
         arrow.y += (arrow.targetY - arrow.y) * 0.2;
     }
 
+    // Clamp sprite position to world bounds (before drawing health bars)
+    for (let id in players) {
+        const p = players[id];
+        if (!p) continue;
+        const margin = 40;
+        p.x = Phaser.Math.Clamp(p.x, margin, config.width - margin);
+        p.y = Phaser.Math.Clamp(p.y, margin, config.height - margin);
+    }
+
     // health bars
     for (let id in players) 
     {
@@ -526,11 +540,6 @@ function update() {
     for (let id in players) {
         const p = players[id];
         if (!p) continue;
-        
-        // Clamp sprite position to world bounds
-        const margin = 40;
-        p.x = Phaser.Math.Clamp(p.x, margin, config.width - margin);
-        p.y = Phaser.Math.Clamp(p.y, margin, config.height - margin);
         
         // Text follows sprite
         if (p.nameText) {
