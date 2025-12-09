@@ -352,33 +352,8 @@ function drawHealthBar(player) {
     // position above head
     let x = sprite.x - barWidth / 2;
     let y = sprite.y - sprite.height / 2 - 12;
-    
-    // Clamp bar position to world bounds
-    const margin = 20;
-    x = Phaser.Math.Clamp(x, margin, config.width - margin);
-    y = Phaser.Math.Clamp(y, margin, config.height - margin);
 
     healthBar.clear();
-
-/*
-    // black border
-    healthBar.fillStyle(0x000000);
-    healthBar.fillRect(x - 1, y - 1, barWidth + 2, barHeight + 2);
-
-    // pick colour based on health %
-    const healthPercent = healthPoints / maxHp;
-    let colour = 0x00ff00; // default green
-    if (healthPercent < 0.3) {
-        colour = 0xff0000; // red
-    } else if (healthPercent < 0.6) {
-        colour = 0xffff00; // yellow
-    }
-a
-    // health fill
-    const healthWidth = healthPercent * barWidth;
-    healthBar.fillStyle(colour);
-    healthBar.fillRect(x, y, healthWidth, barHeight);
-*/
 
     const ratio = healthPoints / maxHp; // 1.0 = full, 0.0 = dead
 
@@ -401,8 +376,7 @@ a
     const color = Phaser.Display.Color.GetColor(r, g, b);
 
     // redraw health bar
-    //const barWidth = 40;
-    //const barHeight = 6;
+
     const healthWidth = Math.floor(barWidth * ratio);
 
     healthBar.clear();
@@ -424,9 +398,22 @@ a
 
 function update() {
     if (!myId) return;
+
     const speed = 5; // adjust to taste
     const player = players[myId];
     // use top-level helper to avoid per-frame allocations
+
+if (typeof update.Count === 'undefined') {
+    update.Count = 0;
+}
+
+
+console.log(
+    "visible:", player.visible,
+    "renderable:", player.renderable,
+    "active:", player.active,
+    "inCamera:", player.inCamera
+);
 
     if ( player.dead == false ) 
     {
@@ -435,6 +422,7 @@ function update() {
         // swallowed by the game.
         if (isTextInputActive()) {
             // ensure we don't send movement while typing
+            console.log('Text input active - movement blocked');
         } else {
             // stop any previous movement
             player.body.setVelocity(0);
@@ -443,16 +431,30 @@ function update() {
             let moving = false;
             let animKey = '';
 
+            const margin = 40;
+
             // Arrow keys / WASD
             if (cursors.left.isDown || wasd.left.isDown) {
-                player.x -= speed;
+
+                console.log('Moving left');
+
+                if ( player.x - speed >= margin )
+                {
+                    player.x -= speed;
+                }
                 animKey = 'right';
                 player.setFlipX(true);
                 player.facing = 'left';
                 moving = true;
             }
             else if (cursors.right.isDown || wasd.right.isDown) {
-                player.x += speed;
+
+                console.log('Moving right');
+
+                if ( player.x + speed <= config.width - margin )
+                {
+                    player.x += speed;
+                }
                 animKey = 'right';
                 player.setFlipX(false);        
                 player.facing = 'right';
@@ -460,20 +462,33 @@ function update() {
             }
 
             if (cursors.up.isDown || wasd.up.isDown) {
-                player.y -= speed;
+
+                console.log('Moving up');
+
+                if ( player.y - speed >= margin )
+                {
+                    player.y -= speed;
+                }
                 animKey = 'up';
                 player.facing = 'up';
                 moving = true;
             }
             else if (cursors.down.isDown || wasd.down.isDown) {
-                player.y += speed;
+
+                console.log('Moving down');
+
+                if ( player.y + speed <= config.height - margin )
+                {
+                    player.y += speed;
+                }
                 animKey = 'down';
                 player.facing = 'down';
                 moving = true;
             }
 
-            // animations
+            // animation
             if (moving) {
+                console.log("animKey:", animKey);
                 player.anims.play(animKey, true);
             } else {
                 if ( player.facing == 'left' )
@@ -516,6 +531,7 @@ function update() {
     }
 
     // Clamp sprite position to world bounds (before drawing health bars)
+    /*
     for (let id in players) {
         const p = players[id];
         if (!p) continue;
@@ -523,6 +539,7 @@ function update() {
         p.x = Phaser.Math.Clamp(p.x, margin, config.width - margin);
         p.y = Phaser.Math.Clamp(p.y, margin, config.height - margin);
     }
+    */
 
     // health bars
     for (let id in players) 
@@ -604,6 +621,11 @@ function addPlayer(scene, id, info) {
         align: 'center'
     }).setOrigin(0.5, 0);
     players[id].nameText.setDepth(10);
+
+    //experiment...
+    players[id].setVisible(true);
+    players[id].setActive(true);
+    players[id].cull = false;
 }
 
 
