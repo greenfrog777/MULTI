@@ -9,51 +9,6 @@
     <script src="main.js"></script>
 </head>
 <body>
-    <!-- Join overlay: asks for player name before entering game -->
-    <div id="joinOverlay" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);z-index:9999;">
-        <div style="background:#222;padding:20px;border-radius:6px;text-align:center;width:320px;color:#fff;">
-            <h2 style="margin:0 0 10px">Enter your name</h2>
-            <input id="nameInput" type="text" placeholder="Player name" maxlength="20" style="width:100%;padding:8px;margin-bottom:8px;font-size:16px;" />
-            <button id="joinBtn" style="width:100%;padding:8px;font-size:16px;">Join</button>
-        </div>
-    </div>
-
-    <script>
-    // Small helper to capture the player's name and make it available to client code
-    (function(){
-        const overlay = document.getElementById('joinOverlay');
-        const input = document.getElementById('nameInput');
-        const btn = document.getElementById('joinBtn');
-
-        function join() {
-            const name = (input.value || '').trim() || ('Player' + Math.floor(Math.random()*1000));
-            overlay.style.display = 'none';
-            // Start the game connection and pass the chosen name
-            try {
-                if (typeof window.startGame === 'function') {
-                    window.startGame(name);
-                } else {
-                    // fallback: remember pending name so network connects will pick it up
-                    window.pendingPlayerName = name;
-                    if (window.socket && window.socket.connected) {
-                        window.socket.emit('join', name);
-                    }
-                }
-            } catch (e) {
-                // ignore
-            }
-        }
-
-        btn.addEventListener('click', join);
-        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
-        input.focus();
-        // Prevent key events from bubbling to Phaser while typing in the name field
-        ['keydown','keyup','keypress'].forEach(evt => {
-            input.addEventListener(evt, e => {
-                e.stopPropagation();
-            });
-        });
-    })();
-    </script>
+    <!-- Login overlay removed. Login is handled inside Phaser via LoginScene. -->
 </body>
 </html>

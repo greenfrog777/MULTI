@@ -1,12 +1,14 @@
+// We'll register scenes below. LoginScene will be added first and GameScene
+// will be the main scene using the existing preload/create/update functions.
 let config = {
     type: Phaser.AUTO,
     width: 800,
     height: 600,
     physics: { default: 'arcade' },
-    scene: { preload, create, update }
+    scene: [] // filled after LoginScene declaration
 };
 
-let game = new Phaser.Game(config);
+let game = null; // created after scenes are registered
 let cursors;
 let canShoot = true; // only one arrow at a time
 
@@ -36,6 +38,133 @@ function preload()
     });    
 
 }
+// Ensure the GameScene key used above is available and calls startNetwork when appropriate
+class GameScene extends Phaser.Scene {
+    constructor() {
+        super({ key: 'GameScene' });
+    }
+
+    preload() { preload.call(this); }
+    create() { create.call(this);
+        // If a pending player name was set (from LoginScene), start network
+        if (window.pendingPlayerName) {
+            startNetwork(this, window.pendingPlayerName);
+        }
+    }
+    update(time, delta) { update.call(this, time, delta); }
+}
+
+// Register scenes and create the Phaser game instance
+// (moved) scene registration and game creation will occur after scene classes
+
+// --- LoginScene: keyboard-driven name entry inside Phaser (no DOM overlay) ---
+class LoginScene extends Phaser.Scene {
+    constructor() {
+        super({ key: 'LoginScene' });
+    }
+
+    create() {
+        this.cameras.main.setBackgroundColor('#111');
+
+        this.add.text(config.width/2, 140, 'Enter player name', { font: '20px Arial', fill: '#fff' }).setOrigin(0.5);
+
+        this.name = '';
+        this.nameText = this.add.text(config.width/2, 190, '_', { font: '24px Arial', fill: '#fffc' }).setOrigin(0.5);
+        this.add.text(config.width/2, 240, 'Type name and press Enter', { font: '14px Arial', fill: '#aaa' }).setOrigin(0.5);
+
+        // Capture keyboard input for name entry
+        this.input.keyboard.on('keydown', (event) => {
+            if (event.key === 'Backspace') {
+                this.name = this.name.slice(0, -1);
+            } else if (event.key === 'Enter') {
+                const finalName = (this.name || '').trim() || ('Player' + Math.floor(Math.random()*1000));
+                window.pendingPlayerName = finalName;
+                // start the main GameScene
+                this.scene.start('GameScene');
+            } else if (event.key.length === 1) {
+                if (this.name.length < 20) this.name += event.key;
+            }
+            this.nameText.setText(this.name.length ? this.name + '_' : '_');
+        });
+    }
+}
+
+// --- Helper: start network & wire up handlers (extracted from previous window.startGame logic) ---
+function startNetwork(scene, playerName) {
+    window.pendingPlayerName = playerName;
+
+    connectToServer(
+        (serverPlayers) => { // onInit
+            myId = socket.id;
+            for (let id in serverPlayers) {
+                addPlayer(scene, id, serverPlayers[id]);
+            }
+        },
+        (id, pos) => { // onUpdate
+            if (!players[id]) {
+                addPlayer(scene, id, pos);
+            } else {
+                players[id].prevX = players[id].x;
+                players[id].prevY = players[id].y;
+                players[id].x = pos.x;
+                players[id].y = pos.y;
+
+                // update name if provided
+                if (pos.name && players[id].nameText) {
+                    players[id].nameText.setText(pos.name);
+                }
+
+                updateFacing(players[id]);
+
+                // Play the correct animation based on facing
+                if ( players[id].facing === 'left' ) 
+                {    
+                    players[id].anims.play('right', true);
+                    players[id].setFlipX(true);
+                }
+                else
+                {
+                    players[id].anims.play(players[id].facing, true);
+                    if ( players[id].facing == 'right' )
+                    {
+                        players[id].setFlipX(false);
+                    }
+                }
+            }
+        },
+        (id) => { // onRemove
+            if (players[id]) {
+                // clean up sprite and nameText
+                if (players[id].nameText) players[id].nameText.destroy();
+                players[id].destroy();
+                delete players[id];
+            }
+        }
+    );
+
+    // Setup arrow handlers now that socket exists
+    setupArrowHandlers(scene, socket);
+
+    // New server driven arrows: register pointer handler after join
+    scene.input.on('pointerdown', pointer => {
+        if (!canShoot) return;
+
+        const player = players[myId];
+        if (!player) return;
+        if (player.dead) return;
+
+        const dx = pointer.worldX - player.x;
+        const dy = pointer.worldY - player.y;
+        const angle = Phaser.Math.RadToDeg(Math.atan2(dy, dx));
+
+        socket.emit('shootArrowNew', { x: player.x, y: player.y, angle });
+        canShoot = false;
+    });
+}
+
+// Register scenes and create the Phaser game instance
+config.scene = [ LoginScene, GameScene ];
+game = new Phaser.Game(config);
 
 
 function create() {
@@ -99,81 +228,10 @@ function create() {
 
     // Do NOT connect to the server until the player clicks Join.
     // Expose a startGame(name) function on window that the join overlay will call.
+    // Use the refactored `startNetwork` to avoid duplicating handlers.
     window.startGame = (playerName) => {
-        // remember selected name so network.connectToServer can emit it on connect
         window.pendingPlayerName = playerName;
-
-        connectToServer(
-            (serverPlayers) => { // onInit
-                myId = socket.id;
-                for (let id in serverPlayers) {
-                    addPlayer(this, id, serverPlayers[id]);
-                }
-            },
-            (id, pos) => { // onUpdate
-                if (!players[id]) 
-                {
-                    addPlayer(this, id, pos);
-                } 
-                else 
-                {
-                    players[id].prevX = players[id].x;
-                    players[id].prevY = players[id].y;
-                    players[id].x = pos.x;
-                    players[id].y = pos.y;
-
-                    // update name if provided
-                    if (pos.name && players[id].nameText) {
-                        players[id].nameText.setText(pos.name);
-                    }
-
-                    // console.log('update facing', pos.facing);
-                    updateFacing(players[id]);
-
-                    // Play the correct animation based on facing
-                    if ( players[id].facing === 'left' ) 
-                    {    
-                        players[id].anims.play('right', true);
-                        players[id].setFlipX(true);
-                    }
-                    else
-                    {
-                        players[id].anims.play(players[id].facing, true);
-                        if ( players[id].facing == 'right' )
-                        {
-                            players[id].setFlipX(false);
-                        }
-                    }
-                }
-            },
-            (id) => { // onRemove
-                if (players[id]) {
-                    // clean up sprite and nameText
-                    if (players[id].nameText) players[id].nameText.destroy();
-                    players[id].destroy();
-                    delete players[id];
-                }
-            }
-        );
-
-        // Setup arrow handlers now that socket exists
-        setupArrowHandlers(this, socket);
-
-        // New server driven arrows: only register pointer handler after join
-        this.input.on('pointerdown', pointer => {
-            if (!canShoot) return;
-
-            const player = players[myId];
-            if (!player) return;
-            if (player.dead) return;
-
-            const dx = pointer.worldX - player.x;
-            const dy = pointer.worldY - player.y;
-            const angle = Phaser.Math.RadToDeg(Math.atan2(dy, dx));
-
-            socket.emit('shootArrowNew', { x: player.x, y: player.y, angle });
-            canShoot = false;
-        });
+        startNetwork(this, playerName);
     };
 
     // create() ends here; the actual connection to the server is started when
