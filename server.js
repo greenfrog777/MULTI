@@ -70,6 +70,58 @@ io.on('connection', socket => {
         const allReady = playerIds.every(pid => players[pid] && players[pid].ready);
         if (!allReady) return;
 
+        // Assign starting positions based on player count before starting
+        const ids = Object.keys(players);
+        const count = Math.min(ids.length, 6);
+        const margin = 60; // distance from edges
+        const cx = WORLD_WIDTH / 2;
+        const cy = WORLD_HEIGHT / 2;
+
+        if (count === 1) {
+            players[ids[0]].x = cx;
+            players[ids[0]].y = cy;
+        } else if (count === 2) {
+            // left and right center
+            players[ids[0]].x = margin;
+            players[ids[0]].y = cy;
+            players[ids[1]].x = WORLD_WIDTH - margin;
+            players[ids[1]].y = cy;
+        } else if (count === 3) {
+            // left, right, top-middle
+            players[ids[0]].x = margin;
+            players[ids[0]].y = cy;
+            players[ids[1]].x = WORLD_WIDTH - margin;
+            players[ids[1]].y = cy;
+            players[ids[2]].x = cx;
+            players[ids[2]].y = margin;
+        } else if (count === 4) {
+            // left, right, top-middle, bottom-middle
+            players[ids[0]].x = margin;
+            players[ids[0]].y = cy;
+            players[ids[1]].x = WORLD_WIDTH - margin;
+            players[ids[1]].y = cy;
+            players[ids[2]].x = cx;
+            players[ids[2]].y = margin;
+            players[ids[3]].x = cx;
+            players[ids[3]].y = WORLD_HEIGHT - margin;
+        } else {
+            // Spread around the edges for more players (simple circular distribution near edges)
+            for (let i = 0; i < ids.length; i++) {
+                const angle = (i / ids.length) * Math.PI * 2;
+                const rx = (WORLD_WIDTH / 2 - margin) * Math.cos(angle);
+                const ry = (WORLD_HEIGHT / 2 - margin) * Math.sin(angle);
+                players[ids[i]].x = cx + rx;
+                players[ids[i]].y = cy + ry;
+            }
+        }
+
+        // reset any running HP/dead state if desired and notify clients
+        for (let pid of ids) {
+            // ensure defaults exist
+            players[pid].dead = false;
+            if (typeof players[pid].hp !== 'number') players[pid].hp = 5;
+        }
+
         // Notify clients to transition to the game
         io.emit('startBattle');
 
