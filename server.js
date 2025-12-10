@@ -37,18 +37,44 @@ io.on('connection', socket => {
         if (!players[id]) {
             // create player record now that we have a name
             const colour = colours[Object.keys(players).length % colours.length];
-            players[id] = { x: 400, y: 300, colour, hp: 5, dead: false, name: clean };
+            players[id] = { x: 400, y: 300, colour, hp: 5, dead: false, name: clean, ready: false };
 
             // Send all current players to the new client
             socket.emit('init', { players, myId: id });
 
             // Notify all other clients about the new player
             socket.broadcast.emit('update', { id, position: players[id] });
+            // Also send lobby update so everyone can refresh the lobby list
+            io.emit('lobbyUpdate', players);
         } else {
             // If player record already exists (reconnect), just update the name
             players[id].name = clean;
             io.emit('update', { id, position: { x: players[id].x, y: players[id].y, name: players[id].name, colour: players[id].colour } });
+            io.emit('lobbyUpdate', players);
         }
+    });
+
+    // Handle player ready toggle from client
+    socket.on('ready', (isReady) => {
+        if (!players[id]) return;
+        players[id].ready = !!isReady;
+        // broadcast updated lobby state
+        io.emit('lobbyUpdate', players);
+    });
+
+    // Handle startBattle request
+    socket.on('startBattle', () => {
+        // Only allow start if all players are present and ready
+        const playerIds = Object.keys(players);
+        if (playerIds.length === 0) return;
+        const allReady = playerIds.every(pid => players[pid] && players[pid].ready);
+        if (!allReady) return;
+
+        // Notify clients to transition to the game
+        io.emit('startBattle');
+
+        // Also send full game init payload so clients can create player sprites
+        io.emit('gameStart', { players });
     });
 
     socket.on('shootArrowNew', data => {

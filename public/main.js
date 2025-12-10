@@ -46,10 +46,13 @@ class GameScene extends Phaser.Scene {
 
     preload() { preload.call(this); }
     create() { create.call(this);
-        // If a pending player name was set (from LoginScene), start network
-        if (window.pendingPlayerName) {
+        // Only start network if not already connected
+        if (window.pendingPlayerName && (!window.socket || !window.socket.connected)) {
             startNetwork(this, window.pendingPlayerName);
         }
+
+        // Setup any game-specific handlers (arrows, pointer) now that scene is active
+        setupGameForScene(this);
     }
     update(time, delta) { update.call(this, time, delta); }
 }
@@ -77,10 +80,10 @@ class LoginScene extends Phaser.Scene {
             if (event.key === 'Backspace') {
                 this.name = this.name.slice(0, -1);
             } else if (event.key === 'Enter') {
-                const finalName = (this.name || '').trim() || ('Player' + Math.floor(Math.random()*1000));
-                window.pendingPlayerName = finalName;
-                // start the main GameScene
-                this.scene.start('GameScene');
+                    const finalName = (this.name || '').trim() || ('Player' + Math.floor(Math.random()*1000));
+                    window.pendingPlayerName = finalName;
+                    // go to LobbyScene (network connection happens from the Lobby)
+                    this.scene.start('LobbyScene');
             } else if (event.key.length === 1) {
                 if (this.name.length < 20) this.name += event.key;
             }
@@ -92,63 +95,151 @@ class LoginScene extends Phaser.Scene {
 // --- Helper: start network & wire up handlers (extracted from previous window.startGame logic) ---
 function startNetwork(scene, playerName) {
     window.pendingPlayerName = playerName;
-
+    // Connect and register handlers for lobby + game
     connectToServer(
         (serverPlayers) => { // onInit
+            // store initial server snapshot; create sprites only when in GameScene
+            window.serverPlayers = serverPlayers;
             myId = socket.id;
-            for (let id in serverPlayers) {
-                addPlayer(scene, id, serverPlayers[id]);
+            if (scene.scene && scene.scene.key === 'GameScene') {
+                for (let id in serverPlayers) addPlayer(scene, id, serverPlayers[id]);
             }
         },
         (id, pos) => { // onUpdate
-            if (!players[id]) {
-                addPlayer(scene, id, pos);
-            } else {
+            // keep a copy of latest server positions
+            window.serverPlayers = window.serverPlayers || {};
+            window.serverPlayers[id] = pos;
+
+            if (players[id]) {
                 players[id].prevX = players[id].x;
                 players[id].prevY = players[id].y;
                 players[id].x = pos.x;
                 players[id].y = pos.y;
 
-                // update name if provided
-                if (pos.name && players[id].nameText) {
-                    players[id].nameText.setText(pos.name);
-                }
-
+                if (pos.name && players[id].nameText) players[id].nameText.setText(pos.name);
                 updateFacing(players[id]);
-
-                // Play the correct animation based on facing
-                if ( players[id].facing === 'left' ) 
-                {    
-                    players[id].anims.play('right', true);
-                    players[id].setFlipX(true);
-                }
-                else
-                {
-                    players[id].anims.play(players[id].facing, true);
-                    if ( players[id].facing == 'right' )
-                    {
-                        players[id].setFlipX(false);
-                    }
-                }
             }
         },
         (id) => { // onRemove
             if (players[id]) {
-                // clean up sprite and nameText
                 if (players[id].nameText) players[id].nameText.destroy();
                 players[id].destroy();
                 delete players[id];
             }
+            if (window.serverPlayers && window.serverPlayers[id]) delete window.serverPlayers[id];
+        },
+        // lobby updates
+        (lobbyData) => {
+            // pass through to scene if it implements onLobbyUpdate
+            if (scene && typeof scene.onLobbyUpdate === 'function') scene.onLobbyUpdate(lobbyData);
+            else window.lobbyPlayers = lobbyData;
+        },
+        // startBattle signal
+        () => {
+            // server says start — transition to GameScene
+            if (scene && scene.scene) scene.scene.start('GameScene');
+            else window.startRequested = true;
+        },
+        // gameStart payload
+        (playersPayload) => {
+            window.serverPlayers = playersPayload;
+            // if we're already in GameScene, create players
+            if (scene && scene.scene && scene.scene.key === 'GameScene') {
+                for (let id in playersPayload) addPlayer(scene, id, playersPayload[id]);
+            }
         }
     );
+}
 
+// --- LobbyScene: shows list of players and ready/start controls ---
+class LobbyScene extends Phaser.Scene {
+    constructor() { super({ key: 'LobbyScene' }); }
+
+    create() {
+        this.cameras.main.setBackgroundColor('#0a0a0a');
+        this.add.text(config.width/2, 40, 'Lobby', { font: '28px Arial', fill: '#fff' }).setOrigin(0.5);
+
+        // Title for players list
+        this.add.text(40, 80, 'Players:', { font: '18px Arial', fill: '#fff' });
+
+        // Create up to 6 slots
+        this.slotTexts = [];
+        this.slotReady = [];
+        for (let i = 0; i < 6; i++) {
+            const y = 110 + i * 34;
+            const nameTxt = this.add.text(80, y, `Slot ${i+1}: (empty)`, { font: '16px Arial', fill: '#ddd' });
+            const readyTxt = this.add.text(360, y, '-', { font: '16px Arial', fill: '#aaa' });
+            this.slotTexts.push(nameTxt);
+            this.slotReady.push(readyTxt);
+        }
+
+        // Ready toggle for local player
+        this.myReady = false;
+        this.readyButton = this.add.text(config.width/2 - 80, 340, 'Ready: No', { font: '18px Arial', fill: '#fff', backgroundColor: '#333' }).setInteractive();
+        this.readyButton.on('pointerdown', () => {
+            this.myReady = !this.myReady;
+            this.readyButton.setText('Ready: ' + (this.myReady ? 'Yes' : 'No'));
+            // tell server
+            if (typeof sendReady === 'function') sendReady(this.myReady);
+        });
+
+        // Start Battle button (enabled only when all ready)
+        this.startButton = this.add.text(config.width/2 + 20, 340, 'Start Battle', { font: '18px Arial', fill: '#666', backgroundColor: '#222' }).setInteractive();
+        this.startButton.on('pointerdown', () => {
+            // only allowed if enabled
+            if (this.startButtonEnabled && typeof requestStartBattle === 'function') requestStartBattle();
+        });
+
+        // Hook into startNetwork to begin connection and receive lobby updates
+        if (!window.socket || !window.socket.connected) {
+            if (window.pendingPlayerName) startNetwork(this, window.pendingPlayerName);
+        }
+
+        // If any lobby data already exists, render it
+        if (window.lobbyPlayers) this.onLobbyUpdate(window.lobbyPlayers);
+    }
+
+    // Called by startNetwork when lobby data changes
+    onLobbyUpdate(lobbyData) {
+        // lobbyData is an object keyed by id => player info
+        const entries = Object.values(lobbyData || {});
+
+        // sort to stable order (by name)
+        entries.sort((a,b)=> (a.name||'').localeCompare(b.name||''));
+
+        for (let i = 0; i < 6; i++) {
+            const ent = entries[i];
+            if (ent) {
+                this.slotTexts[i].setText(`${i+1}. ${ent.name}`);
+                this.slotReady[i].setText(ent.ready ? 'Ready' : 'Not Ready');
+                this.slotReady[i].setFill(ent.ready ? '#0f0' : '#faa');
+            } else {
+                this.slotTexts[i].setText(`${i+1}: (empty)`);
+                this.slotReady[i].setText('-');
+                this.slotReady[i].setFill('#aaa');
+            }
+        }
+
+        // Determine if all currently connected players (up to 6) are ready
+        const connectedPlayers = Object.values(lobbyData || {});
+        const checkPlayers = connectedPlayers.slice(0, 6);
+        const allReady = checkPlayers.length > 0 && checkPlayers.every(p => p.ready);
+
+        this.startButtonEnabled = allReady;
+        this.startButton.setStyle({ fill: allReady ? '#fff' : '#666', backgroundColor: allReady ? '#480' : '#222' });
+    }
+}
+
+// Called when GameScene becomes active to setup arrow handlers and pointer input
+function setupGameForScene(scene) {
+    if (!socket) return;
     // Setup arrow handlers now that socket exists
     setupArrowHandlers(scene, socket);
 
-    // New server driven arrows: register pointer handler after join
+    // Pointer handler for shooting
+    scene.input.off('pointerdown');
     scene.input.on('pointerdown', pointer => {
         if (!canShoot) return;
-
         const player = players[myId];
         if (!player) return;
         if (player.dead) return;
@@ -160,10 +251,16 @@ function startNetwork(scene, playerName) {
         socket.emit('shootArrowNew', { x: player.x, y: player.y, angle });
         canShoot = false;
     });
+    // If we have serverPlayers snapshot, ensure sprites exist
+    if (window.serverPlayers) {
+        for (let id in window.serverPlayers) {
+            if (!players[id]) addPlayer(scene, id, window.serverPlayers[id]);
+        }
+    }
 }
 
 // Register scenes and create the Phaser game instance
-config.scene = [ LoginScene, GameScene ];
+config.scene = [ LoginScene, LobbyScene, GameScene ];
 game = new Phaser.Game(config);
 
 
