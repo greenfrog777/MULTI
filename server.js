@@ -11,6 +11,7 @@ app.use(express.static('public'));
 const colours = ["#0000ff", "#ff0000", "#00ff00", "#ffa500", "#ff00ff", "#00ffff", "#ffff00"];
 let players = {};
 let nextJoinOrder = 1; // incremental join order for lobby sorting
+let matchActive = false; // whether a battle is currently active
 
 io.on('connection', socket => {
     const id = socket.id;
@@ -38,7 +39,7 @@ io.on('connection', socket => {
         if (!players[id]) {
             // create player record now that we have a name
             const colour = colours[Object.keys(players).length % colours.length];
-            players[id] = { x: 400, y: 300, colour, hp: 5, dead: false, name: clean, ready: false, joinOrder: nextJoinOrder++ };
+            players[id] = { x: 400, y: 300, colour, hp: 5, dead: false, name: clean, ready: false, joinOrder: nextJoinOrder++, inGame: false };
 
             // Send all current players to the new client
             socket.emit('init', { players, myId: id });
@@ -46,14 +47,14 @@ io.on('connection', socket => {
             // Notify all other clients about the new player
             socket.broadcast.emit('update', { id, position: players[id] });
             // Also send lobby update so everyone can refresh the lobby list
-            io.emit('lobbyUpdate', players);
+            emitLobbyUpdate();
         } else {
             // If player record already exists (reconnect), just update the name
             players[id].name = clean;
             // ensure joinOrder persists for reconnects
             if (!players[id].joinOrder) players[id].joinOrder = nextJoinOrder++;
             io.emit('update', { id, position: { x: players[id].x, y: players[id].y, name: players[id].name, colour: players[id].colour } });
-            io.emit('lobbyUpdate', players);
+            emitLobbyUpdate();
         }
     });
 
@@ -62,19 +63,19 @@ io.on('connection', socket => {
         if (!players[id]) return;
         players[id].ready = !!isReady;
         // broadcast updated lobby state
-        io.emit('lobbyUpdate', players);
+        emitLobbyUpdate();
     });
 
     // Handle startBattle request
     socket.on('startBattle', () => {
-        // Only allow start if all players are present and ready
-        const playerIds = Object.keys(players);
+        // Only allow start using players currently in the lobby (not inGame)
+        const playerIds = Object.keys(players).filter(pid => !players[pid].inGame);
         if (playerIds.length === 0) return;
         const allReady = playerIds.every(pid => players[pid] && players[pid].ready);
         if (!allReady) return;
 
         // Assign starting positions based on player count before starting
-        const ids = Object.keys(players);
+        const ids = playerIds;
         const count = Math.min(ids.length, 6);
         const margin = 60; // distance from edges
         const cx = WORLD_WIDTH / 2;
@@ -118,18 +119,24 @@ io.on('connection', socket => {
             }
         }
 
-        // reset any running HP/dead state if desired and notify clients
+        // reset HP/dead state for all participating players and mark them in-game
         for (let pid of ids) {
-            // ensure defaults exist
             players[pid].dead = false;
-            if (typeof players[pid].hp !== 'number') players[pid].hp = 5;
+            players[pid].hp = 5; // always reset HP at match start
+            players[pid].inGame = true;
         }
+
+        // mark match active
+        matchActive = true;
 
         // Notify clients to transition to the game
         io.emit('startBattle');
 
         // Also send full game init payload so clients can create player sprites
         io.emit('gameStart', { players });
+
+        // Lobby membership changed (players moved into game) — update lobby lists
+        emitLobbyUpdate();
     });
 
     socket.on('shootArrowNew', data => {
@@ -146,12 +153,33 @@ io.on('connection', socket => {
         spawnArrow(socket.id, data.x, data.y, data.angle);
     });    
 
+    // Handle a player returning to the lobby (not automatically done by server)
+    socket.on('backToLobby', () => {
+        if (!players[id]) return;
+        players[id].inGame = false;
+        players[id].ready = false;
+        // Notify lobby clients
+        emitLobbyUpdate();
+    });
+
     // Handle disconnection
     socket.on('disconnect', () => {
         delete players[id];
-        io.emit('remove', { id });
+        io.emit('remove', id);
+        emitLobbyUpdate();
     });
 });
+
+// Helper to emit only players that are in the lobby (not currently in a running game)
+function emitLobbyUpdate() {
+    const lobbyPlayers = {};
+    for (let pid in players) {
+        if (!players[pid].inGame) {
+            lobbyPlayers[pid] = players[pid];
+        }
+    }
+    io.emit('lobbyUpdate', lobbyPlayers);
+}
 
 // START OF NEW CODE
 
@@ -221,7 +249,19 @@ setInterval(() => {
                 p.hp -= 1;  // apply damage
                 if ( p.hp <= 0 )
                 {
+                    // mark dead
                     p.dead = true;
+
+                    // if a match is active, check for a winner
+                    if (matchActive) {
+                        const alive = Object.keys(players).filter(pid => players[pid] && !players[pid].dead);
+                        if (alive.length === 1) {
+                            const winnerId = alive[0];
+                            matchActive = false;
+                            // emit game over with winner details
+                            io.emit('gameOver', { winnerId, winnerName: players[winnerId].name, colour: players[winnerId].colour });
+                        }
+                    }
                 }
                 console.log('Player hit, now their hp is ', p.hp);
 

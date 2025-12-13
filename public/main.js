@@ -147,6 +147,15 @@ function startNetwork(scene, playerName) {
             if (scene && scene.scene && scene.scene.key === 'GameScene') {
                 for (let id in playersPayload) addPlayer(scene, id, playersPayload[id]);
             }
+        },
+        // gameOver / victory
+        (gameOverData) => {
+            if (scene && scene.scene) {
+                // start VictoryScene and pass winner info
+                scene.scene.start('VictoryScene', { winnerId: gameOverData.winnerId, winnerName: gameOverData.winnerName, colour: gameOverData.colour });
+            } else {
+                window.pendingGameOver = gameOverData;
+            }
         }
     );
 }
@@ -156,6 +165,9 @@ class LobbyScene extends Phaser.Scene {
     constructor() { super({ key: 'LobbyScene' }); }
 
     create() {
+        // Ensure any leftover game entities are removed when entering the lobby/menus
+        // This is defensive in case we transitioned here from a game without cleanup.
+        try { cleanupGameEntities(); } catch (e) { /* ignore */ }
         this.cameras.main.setBackgroundColor('#0a0a0a');
         this.add.text(config.width/2, 40, 'Lobby', { font: '28px Arial', fill: '#fff' }).setOrigin(0.5);
 
@@ -233,6 +245,111 @@ class LobbyScene extends Phaser.Scene {
     }
 }
 
+// --- VictoryScene: displays winner and celebratory animation ---
+class VictoryScene extends Phaser.Scene {
+    constructor() { super({ key: 'VictoryScene' }); }
+
+    init(data) {
+        this.winnerId = data && data.winnerId;
+        this.winnerName = (data && data.winnerName) || 'Player';
+        this.winnerColour = (data && data.colour) || 0xffffff;
+    }
+
+    create() {
+        const cx = config.width/2;
+        const cy = config.height/2;
+
+        // dark background
+        this.cameras.main.setBackgroundColor('#081018');
+
+        // big winner text
+        const big = this.add.text(cx, cy, `${this.winnerName} Wins!`, {
+            font: '64px Arial',
+            fill: '#ffffff',
+            stroke: '#000000',
+            strokeThickness: 10
+        }).setOrigin(0.5);
+
+        // small subtitle
+        this.add.text(cx, cy + 64, 'Victory!', { font: '24px Arial', fill: '#ffd700' }).setOrigin(0.5);
+
+        // create celebratory runner sprite that moves around the screen border
+        const margin = 40;
+        const sprite = this.add.sprite(margin, margin, 'player').setScale(3);
+        // Normalize winner colour (server sends strings like "#rrggbb") and lighten it
+        try {
+            let baseCol = this.winnerColour || 0xffffff;
+            if (typeof baseCol === 'string') {
+                // Convert hex string to integer color
+                baseCol = Phaser.Display.Color.HexStringToColor(baseCol).color;
+            }
+            const finalTint = lightenColor(baseCol, 0.4);
+            sprite.setTint(finalTint);
+        } catch (e) {
+            // Fallback to white if parsing fails
+            sprite.setTint(0xffffff);
+            console.warn('Failed to tint winner sprite, using default', e);
+        }
+
+        // ensure animations exist (GameScene's create setup should have created them, but guard)
+        if (!this.anims.exists('right')) {
+            this.anims.create({ key: 'right', frames: this.anims.generateFrameNumbers('player', { start: 0, end: 7 }), frameRate: 10, repeat: -1 });
+            this.anims.create({ key: 'down', frames: this.anims.generateFrameNumbers('player', { start: 8, end: 15 }), frameRate: 10, repeat: -1 });
+            this.anims.create({ key: 'up', frames: this.anims.generateFrameNumbers('player', { start: 16, end: 23 }), frameRate: 10, repeat: -1 });
+            this.anims.create({ key: 'idle-right', frames: this.anims.generateFrameNumbers('idle', { start: 0, end: 3 }), frameRate: 10, repeat: -1 });
+            this.anims.create({ key: 'idle-down', frames: this.anims.generateFrameNumbers('idle', { start: 4, end: 7 }), frameRate: 10, repeat: -1 });
+            this.anims.create({ key: 'idle-up', frames: this.anims.generateFrameNumbers('idle', { start: 8, end: 11 }), frameRate: 10, repeat: -1 });
+        }
+
+        // path: top-left -> top-right -> bottom-right -> bottom-left -> top-left
+        const path = [
+            { x: config.width - margin, y: margin, anim: 'right', flipX: false },
+            { x: config.width - margin, y: config.height - margin, anim: 'down', flipX: false },
+            { x: margin, y: config.height - margin, anim: 'right', flipX: true },
+            { x: margin, y: margin, anim: 'up', flipX: false }
+        ];
+
+        // Loop the sprite around the border using chained tweens
+        // (compatible with Phaser builds that don't expose `tweens.timeline`).
+        const scene = this;
+        let _idx = 0;
+        function moveNext() {
+            const step = path[_idx];
+            scene.tweens.add({
+                targets: sprite,
+                x: step.x,
+                y: step.y,
+                duration: 1400,
+                ease: 'Linear',
+                onStart: function() {
+                    sprite.anims.play(step.anim, true);
+                    sprite.setFlipX(!!step.flipX);
+                },
+                onComplete: function() {
+                    _idx = (_idx + 1) % path.length;
+                    // tiny pause between moves for visual rhythm
+                    scene.time.delayedCall(50, moveNext, [], scene);
+                }
+            });
+        }
+        // Kick off the loop
+        moveNext();
+
+        // After 5s, show Return to Lobby button
+        this.time.delayedCall(5000, () => {
+            const btn = this.add.text(cx, config.height - 80, 'Return to Lobby', { font: '20px Arial', fill: '#fff', backgroundColor: '#222', padding: { x: 10, y: 8 } }).setOrigin(0.5).setInteractive();
+            btn.on('pointerdown', () => {
+                // mark local player not ready and tell server we're back in the lobby
+                if (typeof sendReady === 'function') sendReady(false);
+                if (typeof sendBackToLobby === 'function') sendBackToLobby();
+                // cleanup any match sprites/graphics so we don't leave players visible
+                try { cleanupGameEntities(); } catch (e) { console.warn('cleanup before lobby failed', e); }
+                this.scene.start('LobbyScene');
+            });
+        });
+    }
+}
+
 // Called when GameScene becomes active to setup arrow handlers and pointer input
 function setupGameForScene(scene) {
     if (!socket) return;
@@ -262,8 +379,41 @@ function setupGameForScene(scene) {
     }
 }
 
+// Clean up sprites/graphics created during a match so scenes don't leak visuals
+function cleanupGameEntities() {
+    // Destroy player sprites and related graphics
+    try {
+        for (let id in players) {
+            const p = players[id];
+            if (!p) continue;
+            try { if (p.nameText) p.nameText.destroy(); } catch (e) {}
+            try { if (p.healthBar) p.healthBar.destroy(); } catch (e) {}
+            try { p.destroy(); } catch (e) {}
+            try { delete players[id]; } catch (e) {}
+        }
+    } catch (e) {
+        console.warn('cleanupGameEntities: error destroying players', e);
+    }
+
+    // Destroy arrows
+    try {
+        for (let aid in arrowList) {
+            try { arrowList[aid].destroy(); } catch (e) {}
+            try { delete arrowList[aid]; } catch (e) {}
+        }
+    } catch (e) {
+        console.warn('cleanupGameEntities: error destroying arrows', e);
+    }
+
+    // Clear server snapshot
+    try { window.serverPlayers = {}; } catch (e) {}
+    window.pendingGameOver = null;
+    // reset shooting state
+    try { canShoot = true; } catch (e) {}
+}
+
 // Register scenes and create the Phaser game instance
-config.scene = [ LoginScene, LobbyScene, GameScene ];
+config.scene = [ LoginScene, LobbyScene, GameScene, VictoryScene ];
 game = new Phaser.Game(config);
 
 
@@ -341,6 +491,11 @@ function create() {
 let arrowList = {}; // key: arrow id, value: Phaser sprite
 
 function setupArrowHandlers(scene, socket) {
+    // Remove previous handlers first to avoid duplicate handlers when re-entering scene
+    try { socket.off('spawnArrow'); } catch (e) {}
+    try { socket.off('updateArrows'); } catch (e) {}
+    try { socket.off('playerHit'); } catch (e) {}
+
     // When the server spawns a new arrow
     socket.on("spawnArrow", data => {
         // create a sprite for the arrow
@@ -559,6 +714,10 @@ function update() {
 
     const speed = 5; // adjust to taste
     const player = players[myId];
+    // Guard against cases where players were cleaned up (e.g. returning to lobby)
+    if (!player) {
+        return;
+    }
     // use top-level helper to avoid per-frame allocations
 
 if (typeof update.Count === 'undefined') {
@@ -566,12 +725,15 @@ if (typeof update.Count === 'undefined') {
 }
 
 
-console.log(
-    "visible:", player.visible,
-    "renderable:", player.renderable,
-    "active:", player.active,
-    "inCamera:", player.inCamera
-);
+// Debug: only log player flags when present
+if (player) {
+    console.log(
+        "visible:", player.visible,
+        "renderable:", player.renderable,
+        "active:", player.active,
+        "inCamera:", player.inCamera
+    );
+}
 
     if ( player.dead == false ) 
     {
@@ -745,7 +907,16 @@ function addPlayer(scene, id, info) {
     // Create physics sprite
     players[id] = scene.physics.add.sprite(info.x, info.y, 'player');
 
-    const baseColor = Phaser.Display.Color.HexStringToColor(colour).color;
+    let baseColor = 0xffffff;
+    try {
+        if (typeof colour === 'string') {
+            baseColor = Phaser.Display.Color.HexStringToColor(colour).color;
+        } else if (typeof colour === 'number') {
+            baseColor = colour;
+        }
+    } catch (e) {
+        baseColor = 0xffffff;
+    }
     const lightColor = lightenColor(baseColor, 0.4);
     const healthBar = scene.add.graphics();
 

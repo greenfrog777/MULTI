@@ -1,6 +1,6 @@
 let socket, myId, players = {}, playerColours = {};
 
-function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattle, onGameStart) {
+function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattle, onGameStart, onGameOver) {
     socket = io();
 
     // If a player name was entered before connecting, tell the server once connected
@@ -53,6 +53,11 @@ function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattl
     socket.on('gameStart', data => {
         if (onGameStart) onGameStart(data.players);
     });
+
+    // Game over / victory
+    socket.on('gameOver', data => {
+        if (onGameOver) onGameOver(data);
+    });
 }
 
 // Send movement updates to server
@@ -71,5 +76,11 @@ function sendReady(isReady) {
 function requestStartBattle() {
     if (socket && socket.connected) {
         socket.emit('startBattle');
+    }
+}
+
+function sendBackToLobby() {
+    if (socket && socket.connected) {
+        socket.emit('backToLobby');
     }
 }
