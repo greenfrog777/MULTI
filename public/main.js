@@ -162,13 +162,13 @@ class LobbyScene extends Phaser.Scene {
         // Title for players list
         this.add.text(40, 80, 'Players:', { font: '18px Arial', fill: '#fff' });
 
-        // Create up to 6 slots
+        // Create up to 6 slots (hidden when empty)
         this.slotTexts = [];
         this.slotReady = [];
         for (let i = 0; i < 6; i++) {
             const y = 110 + i * 34;
-            const nameTxt = this.add.text(80, y, `Slot ${i+1}: (empty)`, { font: '16px Arial', fill: '#ddd' });
-            const readyTxt = this.add.text(360, y, '-', { font: '16px Arial', fill: '#aaa' });
+            const nameTxt = this.add.text(80, y, ``, { font: '16px Arial', fill: '#ddd' }).setVisible(false);
+            const readyTxt = this.add.text(360, y, '', { font: '16px Arial', fill: '#aaa' }).setVisible(false);
             this.slotTexts.push(nameTxt);
             this.slotReady.push(readyTxt);
         }
@@ -190,6 +190,9 @@ class LobbyScene extends Phaser.Scene {
             if (this.startButtonEnabled && typeof requestStartBattle === 'function') requestStartBattle();
         });
 
+        // Message shown when waiting for other players
+        this.waitingText = this.add.text(config.width/2, 220, 'Waiting for other players', { font: '18px Arial', fill: '#ccc' }).setOrigin(0.5).setVisible(false);
+
         // Hook into startNetwork to begin connection and receive lobby updates
         if (!window.socket || !window.socket.connected) {
             if (window.pendingPlayerName) startNetwork(this, window.pendingPlayerName);
@@ -210,23 +213,23 @@ class LobbyScene extends Phaser.Scene {
         for (let i = 0; i < 6; i++) {
             const ent = entries[i];
             if (ent) {
-                this.slotTexts[i].setText(`${i+1}. ${ent.name}`);
-                this.slotReady[i].setText(ent.ready ? 'Ready' : 'Not Ready');
-                this.slotReady[i].setFill(ent.ready ? '#0f0' : '#faa');
+                this.slotTexts[i].setText(`${i+1}. ${ent.name}`).setVisible(true);
+                this.slotReady[i].setText(ent.ready ? 'Ready' : 'Not Ready').setFill(ent.ready ? '#0f0' : '#faa').setVisible(true);
             } else {
-                this.slotTexts[i].setText(`${i+1}: (empty)`);
-                this.slotReady[i].setText('-');
-                this.slotReady[i].setFill('#aaa');
+                this.slotTexts[i].setVisible(false);
+                this.slotReady[i].setVisible(false);
             }
         }
 
-        // Determine if all currently connected players (up to 6) are ready
-        const connectedPlayers = Object.values(lobbyData || {});
-        const checkPlayers = connectedPlayers.slice(0, 6);
-        const allReady = checkPlayers.length > 0 && checkPlayers.every(p => p.ready);
+        // Determine readiness: require at least 2 players and all of them ready
+        const connectedPlayers = entries.slice(0, 6);
+        const allReady = connectedPlayers.length >= 2 && connectedPlayers.every(p => p.ready);
 
         this.startButtonEnabled = allReady;
         this.startButton.setStyle({ fill: allReady ? '#fff' : '#666', backgroundColor: allReady ? '#480' : '#222' });
+
+        // Show waiting text when fewer than 2 players
+        this.waitingText.setVisible(connectedPlayers.length < 2);
     }
 }
 
