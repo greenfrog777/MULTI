@@ -204,8 +204,8 @@ class LobbyScene extends Phaser.Scene {
         // lobbyData is an object keyed by id => player info
         const entries = Object.values(lobbyData || {});
 
-        // sort to stable order (by name)
-        entries.sort((a,b)=> (a.name||'').localeCompare(b.name||''));
+        // sort by join order (first to join appears first)
+        entries.sort((a,b) => (a.joinOrder || 0) - (b.joinOrder || 0));
 
         for (let i = 0; i < 6; i++) {
             const ent = entries[i];

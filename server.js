@@ -10,6 +10,7 @@ app.use(express.static('public'));
 
 const colours = ["#0000ff", "#ff0000", "#00ff00", "#ffa500", "#ff00ff", "#00ffff", "#ffff00"];
 let players = {};
+let nextJoinOrder = 1; // incremental join order for lobby sorting
 
 io.on('connection', socket => {
     const id = socket.id;
@@ -37,7 +38,7 @@ io.on('connection', socket => {
         if (!players[id]) {
             // create player record now that we have a name
             const colour = colours[Object.keys(players).length % colours.length];
-            players[id] = { x: 400, y: 300, colour, hp: 5, dead: false, name: clean, ready: false };
+            players[id] = { x: 400, y: 300, colour, hp: 5, dead: false, name: clean, ready: false, joinOrder: nextJoinOrder++ };
 
             // Send all current players to the new client
             socket.emit('init', { players, myId: id });
@@ -49,6 +50,8 @@ io.on('connection', socket => {
         } else {
             // If player record already exists (reconnect), just update the name
             players[id].name = clean;
+            // ensure joinOrder persists for reconnects
+            if (!players[id].joinOrder) players[id].joinOrder = nextJoinOrder++;
             io.emit('update', { id, position: { x: players[id].x, y: players[id].y, name: players[id].name, colour: players[id].colour } });
             io.emit('lobbyUpdate', players);
         }
