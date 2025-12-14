@@ -216,6 +216,16 @@ class LobbyScene extends Phaser.Scene {
 
     // Called by startNetwork when lobby data changes
     onLobbyUpdate(lobbyData) {
+        // If the scene is not currently active (we may have transitioned away), ignore updates.
+        // This avoids attempting to re-render Phaser Text objects that may have been destroyed,
+        // which can cause internal canvas/context errors (e.g. drawImage on null).
+        try {
+            if (!this.sys || typeof this.sys.isActive === 'function' && !this.sys.isActive()) {
+                return;
+            }
+        } catch (e) {
+            // If checking fails for any reason, continue cautiously.
+        }
         // lobbyData is an object keyed by id => player info
         const entries = Object.values(lobbyData || {});
 
@@ -224,12 +234,21 @@ class LobbyScene extends Phaser.Scene {
 
         for (let i = 0; i < 6; i++) {
             const ent = entries[i];
+            const nameTxt = this.slotTexts && this.slotTexts[i];
+            const readyTxt = this.slotReady && this.slotReady[i];
             if (ent) {
-                this.slotTexts[i].setText(`${i+1}. ${ent.name}`).setVisible(true);
-                this.slotReady[i].setText(ent.ready ? 'Ready' : 'Not Ready').setFill(ent.ready ? '#0f0' : '#faa').setVisible(true);
+                if (nameTxt && typeof nameTxt.setText === 'function') {
+                    nameTxt.setText(`${i+1}. ${ent.name}`);
+                    if (typeof nameTxt.setVisible === 'function') nameTxt.setVisible(true);
+                }
+                if (readyTxt && typeof readyTxt.setText === 'function') {
+                    readyTxt.setText(ent.ready ? 'Ready' : 'Not Ready');
+                    if (typeof readyTxt.setFill === 'function') readyTxt.setFill(ent.ready ? '#0f0' : '#faa');
+                    if (typeof readyTxt.setVisible === 'function') readyTxt.setVisible(true);
+                }
             } else {
-                this.slotTexts[i].setVisible(false);
-                this.slotReady[i].setVisible(false);
+                if (nameTxt && typeof nameTxt.setVisible === 'function') nameTxt.setVisible(false);
+                if (readyTxt && typeof readyTxt.setVisible === 'function') readyTxt.setVisible(false);
             }
         }
 
@@ -238,10 +257,27 @@ class LobbyScene extends Phaser.Scene {
         const allReady = connectedPlayers.length >= 2 && connectedPlayers.every(p => p.ready);
 
         this.startButtonEnabled = allReady;
-        this.startButton.setStyle({ fill: allReady ? '#fff' : '#666', backgroundColor: allReady ? '#480' : '#222' });
+        if (this.startButton && typeof this.startButton.setStyle === 'function') {
+            try {
+                this.startButton.setStyle({ fill: allReady ? '#fff' : '#666', backgroundColor: allReady ? '#480' : '#222' });
+            } catch (err) {
+                // If setStyle throws (e.g. internal texture/context was destroyed), recreate a safe fallback
+                console.warn('startButton.setStyle failed, recreating startButton:', err);
+                try {
+                    // destroy existing and recreate a minimal start button
+                    if (this.startButton && typeof this.startButton.destroy === 'function') this.startButton.destroy();
+                } catch (e) {}
+                this.startButton = this.add.text(config.width/2 + 20, 340, 'Start Battle', { font: '18px Arial', fill: allReady ? '#fff' : '#666', backgroundColor: allReady ? '#480' : '#222' }).setInteractive();
+                this.startButton.on('pointerdown', () => {
+                    if (this.startButtonEnabled && typeof requestStartBattle === 'function') requestStartBattle();
+                });
+            }
+        }
 
         // Show waiting text when fewer than 2 players
-        this.waitingText.setVisible(connectedPlayers.length < 2);
+        if (this.waitingText && typeof this.waitingText.setVisible === 'function') {
+            this.waitingText.setVisible(connectedPlayers.length < 2);
+        }
     }
 }
 
