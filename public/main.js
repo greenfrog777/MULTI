@@ -458,49 +458,51 @@ function create() {
     // Stop players leaving the game area
     this.physics.world.setBounds(0, 0, config.width, config.height);
 
-    // Run animations
-    this.anims.create({
-        key: 'right',
-        frames: this.anims.generateFrameNumbers('player', { start: 0, end: 7 }),
-        frameRate: 10,
-        repeat: -1
-    });
+    // Register animations only once (Phaser's AnimationManager is global)
+    if (!this.anims.exists('right')) {
+        this.anims.create({
+            key: 'right',
+            frames: this.anims.generateFrameNumbers('player', { start: 0, end: 7 }),
+            frameRate: 10,
+            repeat: -1
+        });
 
-    this.anims.create({
-        key: 'down',
-        frames: this.anims.generateFrameNumbers('player', { start: 8, end: 15 }),
-        frameRate: 10,
-        repeat: -1
-    });
+        this.anims.create({
+            key: 'down',
+            frames: this.anims.generateFrameNumbers('player', { start: 8, end: 15 }),
+            frameRate: 10,
+            repeat: -1
+        });
 
-    this.anims.create({
-        key: 'up',
-        frames: this.anims.generateFrameNumbers('player', { start: 16, end: 23 }),
-        frameRate: 10,
-        repeat: -1
-    });
+        this.anims.create({
+            key: 'up',
+            frames: this.anims.generateFrameNumbers('player', { start: 16, end: 23 }),
+            frameRate: 10,
+            repeat: -1
+        });
 
-    // Idle animations
-    this.anims.create({
-        key: 'idle-right',
-        frames: this.anims.generateFrameNumbers('idle', { start: 0, end: 3 }),
-        frameRate: 10,
-        repeat: -1
-    });
+        // Idle animations
+        this.anims.create({
+            key: 'idle-right',
+            frames: this.anims.generateFrameNumbers('idle', { start: 0, end: 3 }),
+            frameRate: 10,
+            repeat: -1
+        });
 
-    this.anims.create({
-        key: 'idle-down',
-        frames: this.anims.generateFrameNumbers('idle', { start: 4, end: 7 }),
-        frameRate: 10,
-        repeat: -1
-    });
+        this.anims.create({
+            key: 'idle-down',
+            frames: this.anims.generateFrameNumbers('idle', { start: 4, end: 7 }),
+            frameRate: 10,
+            repeat: -1
+        });
 
-    this.anims.create({
-        key: 'idle-up',
-        frames: this.anims.generateFrameNumbers('idle', { start: 8, end: 11 }),
-        frameRate: 10,
-        repeat: -1
-    });
+        this.anims.create({
+            key: 'idle-up',
+            frames: this.anims.generateFrameNumbers('idle', { start: 8, end: 11 }),
+            frameRate: 10,
+            repeat: -1
+        });
+    }
 
 
     cursors = this.input.keyboard.createCursorKeys();
