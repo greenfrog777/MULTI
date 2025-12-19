@@ -11,6 +11,8 @@ let config = {
 let game = null; // created after scenes are registered
 let cursors;
 let canShoot = true; // only one arrow at a time
+let nextAllowedShoot = 0; // timestamp (ms) when next shot is allowed
+const SHOOT_COOLDOWN_MS = 800; // cooldown between shots in milliseconds
 
 // let players = {}; // Phaser rectangles keyed by socket ID
 // let myId = null;
@@ -395,6 +397,8 @@ function setupGameForScene(scene) {
     // Pointer handler for shooting
     scene.input.off('pointerdown');
     scene.input.on('pointerdown', pointer => {
+        // enforce cooldown first
+        if (Date.now() < nextAllowedShoot) return;
         if (!canShoot) return;
         const player = players[myId];
         if (!player) return;
@@ -406,6 +410,9 @@ function setupGameForScene(scene) {
 
         socket.emit('shootArrowNew', { x: player.x, y: player.y, angle });
         canShoot = false;
+        // set cooldown timestamp and ensure local re-enable after cooldown
+        nextAllowedShoot = Date.now() + SHOOT_COOLDOWN_MS;
+        setTimeout(() => { canShoot = true; }, SHOOT_COOLDOWN_MS + 10);
     });
     // If we have serverPlayers snapshot, ensure sprites exist
     if (window.serverPlayers) {
@@ -445,7 +452,7 @@ function cleanupGameEntities() {
     try { window.serverPlayers = {}; } catch (e) {}
     window.pendingGameOver = null;
     // reset shooting state
-    try { canShoot = true; } catch (e) {}
+    try { canShoot = true; nextAllowedShoot = 0; } catch (e) {}
 }
 
 // Register scenes and create the Phaser game instance
@@ -550,7 +557,8 @@ function setupArrowHandlers(scene, socket) {
     socket.on("updateArrows", data => {
         const currentIds = new Set();
         const hasArrow = data.some(a => a.ownerId === myId);
-        if (!hasArrow) canShoot = true;
+        // only allow shooting again when server reports no active arrow AND local cooldown elapsed
+        if (!hasArrow && Date.now() >= nextAllowedShoot) canShoot = true;
 
         for (let arrowData of data) {
             currentIds.add(arrowData.ownerId);

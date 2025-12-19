@@ -263,7 +263,7 @@ setInterval(() => {
                         }
                     }
                 }
-                console.log('Player hit, now their hp is ', p.hp);
+                // console.log('Player hit, now their hp is ', p.hp);
 
                 io.emit("playerHit", { playerId: id, hp: p.hp });
                 break;
