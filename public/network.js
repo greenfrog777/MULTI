@@ -18,7 +18,8 @@ function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattl
         for (let id in data.players) {
             playerColours[id] = data.players[id].colour; // server-assigned colour
         }
-        if (onInit) onInit(data.players);
+        // pass full init payload (may include maxHp)
+        if (onInit) onInit(data);
     });
 
     // New player joined or movement update
@@ -51,7 +52,7 @@ function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattl
 
     // Server sends full game start payload
     socket.on('gameStart', data => {
-        if (onGameStart) onGameStart(data.players);
+        if (onGameStart) onGameStart(data);
     });
 
     // Game over / victory

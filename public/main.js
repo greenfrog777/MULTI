@@ -13,6 +13,9 @@ let cursors;
 let canShoot = true; // only one arrow at a time
 let nextAllowedShoot = 0; // timestamp (ms) when next shot is allowed
 const SHOOT_COOLDOWN_MS = 800; // cooldown between shots in milliseconds
+// Centralized player health constant - authoritative value comes from the server
+// Client will receive `maxHp` in the `init`/`gameStart` payload and set this.
+let PLAYER_MAX_HP = null;
 
 // let players = {}; // Phaser rectangles keyed by socket ID
 // let myId = null;
@@ -99,7 +102,11 @@ function startNetwork(scene, playerName) {
     window.pendingPlayerName = playerName;
     // Connect and register handlers for lobby + game
     connectToServer(
-        (serverPlayers) => { // onInit
+        (initData) => { // onInit (may include players and maxHp)
+            // extract players payload (support old-style payloads too)
+            const serverPlayers = initData && initData.players ? initData.players : initData;
+            // if server provided authoritative maxHp, override client value
+            if (initData && typeof initData.maxHp === 'number') PLAYER_MAX_HP = initData.maxHp;
             // store initial server snapshot; create sprites only when in GameScene
             window.serverPlayers = serverPlayers;
             myId = socket.id;
@@ -142,12 +149,31 @@ function startNetwork(scene, playerName) {
             if (scene && scene.scene) scene.scene.start('GameScene');
             else window.startRequested = true;
         },
-        // gameStart payload
-        (playersPayload) => {
+        // gameStart payload -- server may send { players, maxHp }
+        (payload) => {
+            // support both new payload shape and older shape where payload was players object
+            const playersPayload = payload && payload.players ? payload.players : payload;
             window.serverPlayers = playersPayload;
-            // if we're already in GameScene, create players
+
+            // if server provided authoritative maxHp, override client value
+            if (payload && typeof payload.maxHp === 'number') {
+                PLAYER_MAX_HP = payload.maxHp;
+            }
+
+            // if we're already in GameScene, create players (or update existing ones)
             if (scene && scene.scene && scene.scene.key === 'GameScene') {
-                for (let id in playersPayload) addPlayer(scene, id, playersPayload[id]);
+                for (let id in playersPayload) {
+                    if (players[id]) {
+                        // update hp from server snapshot if provided
+                        if (playersPayload[id] && typeof playersPayload[id].hp === 'number') {
+                            players[id].healthPoints = playersPayload[id].hp;
+                        } else {
+                            players[id].healthPoints = PLAYER_MAX_HP;
+                        }
+                    } else {
+                        addPlayer(scene, id, playersPayload[id]);
+                    }
+                }
             }
         },
         // gameOver / victory
@@ -706,7 +732,8 @@ function drawHealthBar(player) {
     const barHeight = 3;
     const healthBar = player.healthBar;
     const healthPoints = player.healthPoints;
-    const maxHp = 5;
+    // Use server-provided PLAYER_MAX_HP; fallback to 1 to avoid divide-by-zero
+    const maxHp = (typeof PLAYER_MAX_HP === 'number' && PLAYER_MAX_HP > 0) ? PLAYER_MAX_HP : 1;
 
     // position above head
     let x = sprite.x - barWidth / 2;
@@ -981,7 +1008,7 @@ function addPlayer(scene, id, info) {
     players[id].anims.play('idle-down', true);
 
     players[id].healthBar = healthBar;
-    players[id].healthPoints = 5;
+    players[id].healthPoints = PLAYER_MAX_HP;
     players[id].scene = scene;
     players[id].dead = false;
 

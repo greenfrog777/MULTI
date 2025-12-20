@@ -12,6 +12,8 @@ const colours = ["#0000ff", "#ff0000", "#00ff00", "#ffa500", "#ff00ff", "#00ffff
 let players = {};
 let nextJoinOrder = 1; // incremental join order for lobby sorting
 let matchActive = false; // whether a battle is currently active
+// Centralized player health constant (imported from shared constants)
+const { PLAYER_MAX_HP } = require('./shared/constants');
 
 io.on('connection', socket => {
     const id = socket.id;
@@ -39,10 +41,10 @@ io.on('connection', socket => {
         if (!players[id]) {
             // create player record now that we have a name
             const colour = colours[Object.keys(players).length % colours.length];
-            players[id] = { x: 400, y: 300, colour, hp: 5, dead: false, name: clean, ready: false, joinOrder: nextJoinOrder++, inGame: false };
+            players[id] = { x: 400, y: 300, colour, hp: PLAYER_MAX_HP, dead: false, name: clean, ready: false, joinOrder: nextJoinOrder++, inGame: false };
 
-            // Send all current players to the new client
-            socket.emit('init', { players, myId: id });
+            // Send all current players to the new client and include maxHp
+            socket.emit('init', { players, myId: id, maxHp: PLAYER_MAX_HP });
 
             // Notify all other clients about the new player
             socket.broadcast.emit('update', { id, position: players[id] });
@@ -122,7 +124,7 @@ io.on('connection', socket => {
         // reset HP/dead state for all participating players and mark them in-game
         for (let pid of ids) {
             players[pid].dead = false;
-            players[pid].hp = 5; // always reset HP at match start
+            players[pid].hp = PLAYER_MAX_HP; // always reset HP at match start
             players[pid].inGame = true;
         }
 
@@ -133,7 +135,8 @@ io.on('connection', socket => {
         io.emit('startBattle');
 
         // Also send full game init payload so clients can create player sprites
-        io.emit('gameStart', { players });
+        // include authoritative max HP so clients display correctly
+        io.emit('gameStart', { players, maxHp: PLAYER_MAX_HP });
 
         // Lobby membership changed (players moved into game) — update lobby lists
         emitLobbyUpdate();
