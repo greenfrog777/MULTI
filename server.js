@@ -30,7 +30,7 @@ io.on('connection', socket => {
         if(players[id]){
             players[id].x       = pos.x;
             players[id].y       = pos.y;
-            io.emit('update', { id, position: { x: pos.x, y: pos.y, name: players[id].name, colour: players[id].colour } });
+            io.emit('update', { id, position: { x: pos.x, y: pos.y, name: players[id].name, colour: players[id].colour }, serverTime: Date.now() });
         }
     });
 
@@ -47,7 +47,7 @@ io.on('connection', socket => {
             socket.emit('init', { players, myId: id, maxHp: PLAYER_MAX_HP });
 
             // Notify all other clients about the new player
-            socket.broadcast.emit('update', { id, position: players[id] });
+            socket.broadcast.emit('update', { id, position: players[id], serverTime: Date.now() });
             // Also send lobby update so everyone can refresh the lobby list
             emitLobbyUpdate();
         } else {
@@ -55,7 +55,7 @@ io.on('connection', socket => {
             players[id].name = clean;
             // ensure joinOrder persists for reconnects
             if (!players[id].joinOrder) players[id].joinOrder = nextJoinOrder++;
-            io.emit('update', { id, position: { x: players[id].x, y: players[id].y, name: players[id].name, colour: players[id].colour } });
+            io.emit('update', { id, position: { x: players[id].x, y: players[id].y, name: players[id].name, colour: players[id].colour }, serverTime: Date.now() });
             emitLobbyUpdate();
         }
     });
@@ -136,7 +136,7 @@ io.on('connection', socket => {
 
         // Also send full game init payload so clients can create player sprites
         // include authoritative max HP so clients display correctly
-        io.emit('gameStart', { players, maxHp: PLAYER_MAX_HP });
+        io.emit('gameStart', { players, maxHp: PLAYER_MAX_HP, serverTime: Date.now() });
 
         // Lobby membership changed (players moved into game) — update lobby lists
         emitLobbyUpdate();
@@ -165,6 +165,15 @@ io.on('connection', socket => {
         emitLobbyUpdate();
     });
 
+    // Receive lightweight client-side diagnostics and log them (so they appear in Render logs)
+    socket.on('clientLog', payload => {
+        try {
+            console.log('[client-log]', socket.id, JSON.stringify(payload));
+        } catch (e) {
+            console.log('[client-log] error serializing payload', socket.id);
+        }
+    });
+
     // Handle disconnection
     socket.on('disconnect', () => {
         delete players[id];
@@ -185,7 +194,12 @@ function emitLobbyUpdate() {
 }
 
 // START OF NEW CODE
-
+// Simple server-side tick instrumentation (non-functional logging only)
+const _serverNetStats = {
+    last: Date.now(),
+    intervals: [],
+    reportEvery: 100
+};
 const SERVER_LOOP_HZ = 20;
 const ARROW_SPEED = 30 * SERVER_LOOP_HZ;
 const ARROW_RADIUS = 10;    // adjust to match your sprite
@@ -206,7 +220,8 @@ function spawnArrow(ownerId, x, y, angle) {
         angle // send angle to client
     });
 
-    // inform clients a new arrow exists
+    // tag arrow with serverTime and inform clients a new arrow exists
+    arrows[arrows.length - 1].serverTime = Date.now();
     io.emit("spawnArrow", arrows[arrows.length - 1]);
 }
 
@@ -216,6 +231,21 @@ let lastTickTime = Date.now();
 setInterval(() => {
 
     const now = Date.now();
+    // server tick instrumentation
+    const tickMs = now - _serverNetStats.last;
+    _serverNetStats.last = now;
+    _serverNetStats.intervals.push(tickMs);
+    if (_serverNetStats.intervals.length >= _serverNetStats.reportEvery) {
+        const ints = _serverNetStats.intervals;
+        const sum = ints.reduce((s, v) => s + v, 0);
+        const avgMs = sum / ints.length;
+        const avgHz = 1000 / avgMs;
+        const variance = ints.reduce((s, v) => s + Math.pow(v - avgMs, 2), 0) / ints.length;
+        const stdMs = Math.sqrt(variance);
+        console.log(`[net-stats] server tick avgHz=${avgHz.toFixed(2)} avgMs=${avgMs.toFixed(1)} stdMs=${stdMs.toFixed(1)} samples=${ints.length}`);
+        _serverNetStats.intervals.length = 0;
+    }
+
     const deltaTime = (now - lastTickTime) / 1000;
     lastTickTime = now;
 
@@ -278,6 +308,9 @@ setInterval(() => {
     arrows = arrows.filter(a => !a.dead);
 
     // 4. Broadcast updated positions
+    // add serverTime to arrow snapshots so clients can timestamp them
+    const nowTs = Date.now();
+    for (let a of arrows) a.serverTime = nowTs;
     io.emit("updateArrows", arrows);
 
 }, 1000 / SERVER_LOOP_HZ ); // 20 Hz tick

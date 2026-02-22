@@ -24,6 +24,32 @@ function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattl
 
     // New player joined or movement update
     socket.on('update', data => {
+        // instrumentation: record arrival interval for update packets
+        try {
+            const now = Date.now();
+            window.netInstrumentation = window.netInstrumentation || {
+                lastUpdateTs: null,
+                updateIntervals: [],
+                pushUpdateInterval: function (dt) { this.updateIntervals.push(dt); if (this.updateIntervals.length > 200) this.updateIntervals.shift(); },
+                getUpdateStats: function () {
+                    const ints = this.updateIntervals;
+                    if (!ints.length) return null;
+                    const sum = ints.reduce((s, v) => s + v, 0);
+                    const avg = sum / ints.length;
+                    const variance = ints.reduce((s, v) => s + Math.pow(v - avg, 2), 0) / ints.length;
+                    return { avgMs: avg, stdMs: Math.sqrt(variance), samples: ints.length };
+                }
+            };
+
+            if (window.netInstrumentation.lastUpdateTs) {
+                window.netInstrumentation.pushUpdateInterval(now - window.netInstrumentation.lastUpdateTs);
+            }
+            window.netInstrumentation.lastUpdateTs = now;
+        } catch (e) {
+            // don't break normal flow on instrumentation errors
+            console.warn('netInstrumentation error', e);
+        }
+
         const { id, position } = data;
 
         // Save colour if we don’t already have it
@@ -31,7 +57,28 @@ function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattl
             playerColours[id] = position.colour;
         }
 
-        if (onUpdate) onUpdate(id, position);
+        // Maintain a small snapshot buffer per remote player for interpolation
+        try {
+            window.serverSnapshots = window.serverSnapshots || {};
+            const buf = window.serverSnapshots[id] || (window.serverSnapshots[id] = []);
+            const ts = (typeof data.serverTime === 'number') ? data.serverTime : Date.now();
+            // push snapshot and clamp buffer length
+            buf.push({ x: position.x, y: position.y, t: ts });
+            if (buf.length > 200) buf.shift();
+
+            // estimate client-server clock offset (clientNow - serverTime)
+            if (typeof data.serverTime === 'number') {
+                window.serverTimeSamples = window.serverTimeSamples || [];
+                window.serverTimeSamples.push(Date.now() - data.serverTime);
+                if (window.serverTimeSamples.length > 200) window.serverTimeSamples.shift();
+                const sum = window.serverTimeSamples.reduce((s, v) => s + v, 0);
+                window.serverTimeOffsetMs = Math.round(sum / window.serverTimeSamples.length);
+            }
+        } catch (e) {
+            // ignore snapshot errors
+        }
+
+        if (onUpdate) onUpdate(id, position, data.serverTime);
     });
 
     // Player disconnected

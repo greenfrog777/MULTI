@@ -17,6 +17,43 @@ const SHOOT_COOLDOWN_MS = 800; // cooldown between shots in milliseconds
 // Client will receive `maxHp` in the `init`/`gameStart` payload and set this.
 let PLAYER_MAX_HP = null;
 
+// Interpolation feature flag and defaults
+window.NET_INTERP_ENABLED = window.NET_INTERP_ENABLED || false; // toggle in console
+window.NET_INTERP_DELAY_MS = window.NET_INTERP_DELAY_MS || 120; // render delay in ms
+window.serverTimeOffsetMs = window.serverTimeOffsetMs || 0; // estimated client - server
+
+// Client-side periodic net diagnostics (non-functional logging only)
+if (!window._clientNetLogHandle) {
+    window._clientNetLogHandle = setInterval(() => {
+        try {
+            const fps = (window.game && window.game.loop && window.game.loop.actualFps) ? window.game.loop.actualFps.toFixed(1) : 'n/a';
+            const netStats = window.netInstrumentation && window.netInstrumentation.getUpdateStats ? window.netInstrumentation.getUpdateStats() : null;
+            if (netStats) {
+                console.log(`[net-stats] client fps=${fps} updateAvgMs=${netStats.avgMs.toFixed(1)} stdMs=${netStats.stdMs.toFixed(1)} samples=${netStats.samples}`);
+            } else {
+                console.log(`[net-stats] client fps=${fps} updateAvgMs=n/a`);
+            }
+        } catch (e) {
+            console.warn('net-stats logging error', e);
+        }
+    }, 5000);
+}
+
+// Periodically send client diagnostics to server so they appear in remote logs
+if (!window._clientLogSender) {
+    window._clientLogSender = setInterval(() => {
+        try {
+            const stats = window.netInstrumentation && window.netInstrumentation.getUpdateStats ? window.netInstrumentation.getUpdateStats() : null;
+            const fps = (window.game && window.game.loop && window.game.loop.actualFps) ? Math.round(window.game.loop.actualFps) : null;
+            if ((stats || fps) && window.socket && window.socket.connected) {
+                window.socket.emit('clientLog', { fps, stats, ts: Date.now() });
+            }
+        } catch (e) {
+            // don't let diagnostics break the game
+        }
+    }, 5000);
+}
+
 // let players = {}; // Phaser rectangles keyed by socket ID
 // let myId = null;
 
@@ -114,19 +151,32 @@ function startNetwork(scene, playerName) {
                 for (let id in serverPlayers) addPlayer(scene, id, serverPlayers[id]);
             }
         },
-        (id, pos) => { // onUpdate
-            // keep a copy of latest server positions
+        (id, pos, serverTime) => { // onUpdate (now receives serverTime)
+            // keep a copy of latest server positions for backward compat
             window.serverPlayers = window.serverPlayers || {};
             window.serverPlayers[id] = pos;
 
-            if (players[id]) {
-                players[id].prevX = players[id].x;
-                players[id].prevY = players[id].y;
-                players[id].x = pos.x;
-                players[id].y = pos.y;
+            // If interpolation is disabled, update sprites immediately (old behavior)
+            if (!window.NET_INTERP_ENABLED) {
+                if (players[id]) {
+                    players[id].prevX = players[id].x;
+                    players[id].prevY = players[id].y;
+                    players[id].x = pos.x;
+                    players[id].y = pos.y;
 
-                if (pos.name && players[id].nameText) players[id].nameText.setText(pos.name);
-                updateFacing(players[id]);
+                    if (pos.name && players[id].nameText) players[id].nameText.setText(pos.name);
+                    updateFacing(players[id]);
+                }
+            } else {
+                // Interpolation enabled: ensure snapshots structure exists (network.js already pushes but be defensive)
+                window.serverSnapshots = window.serverSnapshots || {};
+                if (!window.serverSnapshots[id]) window.serverSnapshots[id] = [];
+                // store a fallback last-known position for this sprite in case interpolation has no data
+                if (players[id]) {
+                    players[id].lastServerX = pos.x;
+                    players[id].lastServerY = pos.y;
+                    players[id].lastServerT = serverTime || Date.now();
+                }
             }
         },
         (id) => { // onRemove
@@ -909,11 +959,36 @@ if (player) {
         if (id === myId) continue;
 
         const enemy = players[id];
+        if (!enemy) continue;
 
-        // updateFacing(enemy);
-        playCorrectAnimation(enemy);
-        enemy.prevX = enemy.x;
-        enemy.prevY = enemy.y;
+        if (window.NET_INTERP_ENABLED) {
+            // compute render timestamp in server time
+            const renderTs = Date.now() - (window.NET_INTERP_DELAY_MS || 120) - (window.serverTimeOffsetMs || 0);
+            const p = getInterpolatedPosition(id, renderTs);
+            if (p) {
+                enemy.prevX = enemy.x;
+                enemy.prevY = enemy.y;
+                enemy.x = p.x;
+                enemy.y = p.y;
+            } else {
+                // fallback to last server-known position if available
+                if (typeof enemy.lastServerX === 'number') {
+                    enemy.prevX = enemy.x;
+                    enemy.prevY = enemy.y;
+                    enemy.x = enemy.lastServerX;
+                    enemy.y = enemy.lastServerY;
+                }
+            }
+            // drive animation from motion
+            updateFacing(enemy);
+            playCorrectAnimation(enemy);
+        } else {
+            // original behavior
+            // updateFacing(enemy);
+            playCorrectAnimation(enemy);
+            enemy.prevX = enemy.x;
+            enemy.prevY = enemy.y;
+        }
     }
 
     // Arrow interpolation only (no client-side velocity)
@@ -1028,6 +1103,34 @@ function addPlayer(scene, id, info) {
     players[id].setVisible(true);
     players[id].setActive(true);
     players[id].cull = false;
+}
+
+// Interpolation helper: find interpolated position for a player at a given server-time
+function getInterpolatedPosition(id, renderTs) {
+    try {
+        const buf = (window.serverSnapshots && window.serverSnapshots[id]) || null;
+        if (!buf || buf.length === 0) return null;
+
+        // ensure buffer is sorted by t
+        // find two surrounding snapshots
+        for (let i = 0; i < buf.length - 1; i++) {
+            const a = buf[i];
+            const b = buf[i+1];
+            if (a.t <= renderTs && renderTs <= b.t) {
+                const span = b.t - a.t || 1;
+                const ratio = (renderTs - a.t) / span;
+                return { x: a.x + (b.x - a.x) * ratio, y: a.y + (b.y - a.y) * ratio };
+            }
+        }
+
+        // if renderTs is before first snapshot, return first
+        if (renderTs <= buf[0].t) return { x: buf[0].x, y: buf[0].y };
+        // if after last, return last
+        const last = buf[buf.length - 1];
+        return { x: last.x, y: last.y };
+    } catch (e) {
+        return null;
+    }
 }
 
 
