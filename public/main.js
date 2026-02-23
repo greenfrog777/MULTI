@@ -18,7 +18,8 @@ const SHOOT_COOLDOWN_MS = 800; // cooldown between shots in milliseconds
 let PLAYER_MAX_HP = null;
 
 // Interpolation feature flag and defaults
-window.NET_INTERP_ENABLED = window.NET_INTERP_ENABLED || false; // toggle in console
+// Enabled by default for deployed builds — visual-only smoothing for remote players
+window.NET_INTERP_ENABLED = true; // toggle in console
 window.NET_INTERP_DELAY_MS = window.NET_INTERP_DELAY_MS || 120; // render delay in ms
 window.serverTimeOffsetMs = window.serverTimeOffsetMs || 0; // estimated client - server
 
