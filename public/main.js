@@ -707,18 +707,38 @@ function setupArrowHandlers(scene, socket) {
 function updateFacing(player) {
     const dx = player.x - player.prevX;
     const dy = player.y - player.prevY;
+    // Remote players move via interpolation, so tiny decimal deltas are common.
+    // Treat very small movement as noise to avoid animation flicker near idle.
+    const movementEpsilon = 0.15;
 
-    if (Math.abs(dx) > Math.abs(dy)) {
-        player.facing = dx < 0 ? 'left' : 'right';
-    } else if (Math.abs(dy) > 0) {
+    // Cache the frame-to-frame delta so the animation function uses the same
+    // movement sample and does not re-calculate slightly different values.
+    player.moveDx = dx;
+    player.moveDy = dy;
+
+    // Prefer vertical animations whenever there is any meaningful vertical motion.
+    // This matches the local player rules and keeps diagonal movement stable:
+    // up-right stays `up`, down-left stays `down`, instead of flickering.
+    if (Math.abs(dy) > movementEpsilon) {
         player.facing = dy < 0 ? 'up' : 'down';
+    } else if (Math.abs(dx) > movementEpsilon) {
+        player.facing = dx < 0 ? 'left' : 'right';
     }
 }
 
 function playCorrectAnimation(player) {
     if (!player.facing) return; // no facing info
 
-    if ( player.x === player.prevX && player.y === player.prevY ) {
+    // Reuse the cached deltas from `updateFacing()` when available.
+    // This keeps facing selection and idle detection in sync for the same frame.
+    const dx = Number.isFinite(player.moveDx) ? player.moveDx : (player.x - player.prevX);
+    const dy = Number.isFinite(player.moveDy) ? player.moveDy : (player.y - player.prevY);
+    const movementEpsilon = 0.15;
+
+    // For interpolated remote sprites, exact equality is unreliable because
+    // positions often change by tiny fractions. Use the same epsilon threshold
+    // to decide when the sprite is effectively idle.
+    if ( Math.abs(dx) <= movementEpsilon && Math.abs(dy) <= movementEpsilon ) {
         // play the appropriate idle animation
         if ( player.facing == 'left' )
         {
