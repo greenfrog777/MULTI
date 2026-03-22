@@ -13,13 +13,63 @@ let players = {};
 let nextJoinOrder = 1; // incremental join order for lobby sorting
 let matchActive = false; // whether a battle is currently active
 // Centralized player health constant (imported from shared constants)
-const { PLAYER_MAX_HP } = require('./shared/constants');
+const {
+    PLAYER_MAX_HP,
+    PLAYER_MOVE_SPEED,
+    WORLD_WIDTH,
+    WORLD_HEIGHT,
+    WORLD_MARGIN,
+    SERVER_SIM_HZ,
+    SERVER_BROADCAST_HZ,
+    INPUT_PERSIST_MS
+} = require('./shared/constants');
+
+function createNeutralInput() {
+    return { up: false, down: false, left: false, right: false };
+}
+
+function normalizeInput(payload) {
+    const input = (payload && typeof payload.input === 'object') ? payload.input : payload;
+    return {
+        up: !!(input && input.up),
+        down: !!(input && input.down),
+        left: !!(input && input.left),
+        right: !!(input && input.right)
+    };
+}
+
+function serializePlayer(player) {
+    return {
+        x: player.x,
+        y: player.y,
+        vx: player.vx || 0,
+        vy: player.vy || 0,
+        colour: player.colour,
+        hp: player.hp,
+        dead: !!player.dead,
+        name: player.name,
+        ready: !!player.ready,
+        joinOrder: player.joinOrder,
+        inGame: !!player.inGame
+    };
+}
+
+function serializePlayersMap(sourcePlayers) {
+    const result = {};
+    for (let pid in sourcePlayers) {
+        if (!sourcePlayers[pid]) continue;
+        result[pid] = serializePlayer(sourcePlayers[pid]);
+    }
+    return result;
+}
+
+function clampPlayerToWorld(player) {
+    player.x = Math.max(WORLD_MARGIN, Math.min(WORLD_WIDTH - WORLD_MARGIN, player.x));
+    player.y = Math.max(WORLD_MARGIN, Math.min(WORLD_HEIGHT - WORLD_MARGIN, player.y));
+}
 
 io.on('connection', socket => {
     const id = socket.id;
-
-    // Assign colour based on number of existing players
-    const colour = colours[Object.keys(players).length % colours.length];
 
     // Do not create the player record yet. Wait for the client to send a 'join' event
     // containing the player's chosen name. This prevents showing a default player
@@ -27,10 +77,25 @@ io.on('connection', socket => {
 
     // Handle movement updates
     socket.on('move', pos => {
-        if(players[id]){
-            players[id].x       = pos.x;
-            players[id].y       = pos.y;
-            io.emit('update', { id, position: { x: pos.x, y: pos.y, name: players[id].name, colour: players[id].colour }, serverTime: Date.now() });
+        if (players[id]) {
+            const player = players[id];
+
+            // Backward-compatible fallback for older clients still sending raw positions.
+            if (pos && typeof pos.x === 'number' && typeof pos.y === 'number' && !('up' in pos) && !('down' in pos) && !('left' in pos) && !('right' in pos) && !pos.input) {
+                player.x = pos.x;
+                player.y = pos.y;
+                player.vx = 0;
+                player.vy = 0;
+                clampPlayerToWorld(player);
+                io.emit('update', { id, position: serializePlayer(player), serverTime: Date.now() });
+                return;
+            }
+
+            player.input = normalizeInput(pos);
+            player.lastInputAt = Date.now();
+            if (pos && typeof pos.seq === 'number') {
+                player.lastInputSeq = pos.seq;
+            }
         }
     });
 
@@ -41,13 +106,36 @@ io.on('connection', socket => {
         if (!players[id]) {
             // create player record now that we have a name
             const colour = colours[Object.keys(players).length % colours.length];
-            players[id] = { x: 400, y: 300, colour, hp: PLAYER_MAX_HP, dead: false, name: clean, ready: false, joinOrder: nextJoinOrder++, inGame: false };
+            players[id] = {
+                x: WORLD_WIDTH / 2,
+                y: WORLD_HEIGHT / 2,
+                vx: 0,
+                vy: 0,
+                colour,
+                hp: PLAYER_MAX_HP,
+                dead: false,
+                name: clean,
+                ready: false,
+                joinOrder: nextJoinOrder++,
+                inGame: false,
+                input: createNeutralInput(),
+                lastInputAt: 0,
+                lastInputSeq: 0
+            };
 
             // Send all current players to the new client and include maxHp
-            socket.emit('init', { players, myId: id, maxHp: PLAYER_MAX_HP });
+            socket.emit('init', {
+                players: serializePlayersMap(players),
+                myId: id,
+                maxHp: PLAYER_MAX_HP,
+                moveSpeed: PLAYER_MOVE_SPEED,
+                serverSimHz: SERVER_SIM_HZ,
+                serverBroadcastHz: SERVER_BROADCAST_HZ,
+                inputPersistMs: INPUT_PERSIST_MS
+            });
 
             // Notify all other clients about the new player
-            socket.broadcast.emit('update', { id, position: players[id], serverTime: Date.now() });
+            socket.broadcast.emit('update', { id, position: serializePlayer(players[id]), serverTime: Date.now() });
             // Also send lobby update so everyone can refresh the lobby list
             emitLobbyUpdate();
         } else {
@@ -55,7 +143,7 @@ io.on('connection', socket => {
             players[id].name = clean;
             // ensure joinOrder persists for reconnects
             if (!players[id].joinOrder) players[id].joinOrder = nextJoinOrder++;
-            io.emit('update', { id, position: { x: players[id].x, y: players[id].y, name: players[id].name, colour: players[id].colour }, serverTime: Date.now() });
+            io.emit('update', { id, position: serializePlayer(players[id]), serverTime: Date.now() });
             emitLobbyUpdate();
         }
     });
@@ -126,6 +214,11 @@ io.on('connection', socket => {
             players[pid].dead = false;
             players[pid].hp = PLAYER_MAX_HP; // always reset HP at match start
             players[pid].inGame = true;
+            players[pid].ready = false;
+            players[pid].vx = 0;
+            players[pid].vy = 0;
+            players[pid].input = createNeutralInput();
+            players[pid].lastInputAt = 0;
         }
 
         // mark match active
@@ -136,7 +229,15 @@ io.on('connection', socket => {
 
         // Also send full game init payload so clients can create player sprites
         // include authoritative max HP so clients display correctly
-        io.emit('gameStart', { players, maxHp: PLAYER_MAX_HP, serverTime: Date.now() });
+        io.emit('gameStart', {
+            players: serializePlayersMap(players),
+            maxHp: PLAYER_MAX_HP,
+            moveSpeed: PLAYER_MOVE_SPEED,
+            serverSimHz: SERVER_SIM_HZ,
+            serverBroadcastHz: SERVER_BROADCAST_HZ,
+            inputPersistMs: INPUT_PERSIST_MS,
+            serverTime: Date.now()
+        });
 
         // Lobby membership changed (players moved into game) — update lobby lists
         emitLobbyUpdate();
@@ -161,6 +262,11 @@ io.on('connection', socket => {
         if (!players[id]) return;
         players[id].inGame = false;
         players[id].ready = false;
+        players[id].dead = false;
+        players[id].vx = 0;
+        players[id].vy = 0;
+        players[id].input = createNeutralInput();
+        players[id].lastInputAt = 0;
         // Notify lobby clients
         emitLobbyUpdate();
     });
@@ -187,25 +293,21 @@ function emitLobbyUpdate() {
     const lobbyPlayers = {};
     for (let pid in players) {
         if (!players[pid].inGame) {
-            lobbyPlayers[pid] = players[pid];
+            lobbyPlayers[pid] = serializePlayer(players[pid]);
         }
     }
     io.emit('lobbyUpdate', lobbyPlayers);
 }
 
-// START OF NEW CODE
-// Simple server-side tick instrumentation (non-functional logging only)
+// Server-side simulation instrumentation
 const _serverNetStats = {
     last: Date.now(),
     intervals: [],
     reportEvery: 100
 };
-const SERVER_LOOP_HZ = 20;
-const ARROW_SPEED = 30 * SERVER_LOOP_HZ;
+const ARROW_SPEED = 600;
 const ARROW_RADIUS = 10;    // adjust to match your sprite
 const PLAYER_RADIUS = 20;   // approximate for collision
-const WORLD_WIDTH = 800;
-const WORLD_HEIGHT = 600;
 
 let arrows = []; // array of active arrows
 
@@ -227,7 +329,7 @@ function spawnArrow(ownerId, x, y, angle) {
 
 let lastTickTime = Date.now();
 
-// Tick loop for arrows
+// Main authoritative simulation loop
 setInterval(() => {
 
     const now = Date.now();
@@ -246,16 +348,44 @@ setInterval(() => {
         _serverNetStats.intervals.length = 0;
     }
 
-    const deltaTime = (now - lastTickTime) / 1000;
+    const deltaTime = Math.min((now - lastTickTime) / 1000, 0.05);
     lastTickTime = now;
+
+    for (let id in players) {
+        const player = players[id];
+        if (!player) continue;
+
+        if (!player.inGame || player.dead) {
+            player.vx = 0;
+            player.vy = 0;
+            continue;
+        }
+
+        let input = player.input || createNeutralInput();
+        if ((now - (player.lastInputAt || 0)) > INPUT_PERSIST_MS) {
+            input = createNeutralInput();
+        }
+
+        let axisX = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+        let axisY = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+
+        if (axisX !== 0 || axisY !== 0) {
+            const length = Math.hypot(axisX, axisY) || 1;
+            axisX /= length;
+            axisY /= length;
+        }
+
+        player.vx = axisX * PLAYER_MOVE_SPEED;
+        player.vy = axisY * PLAYER_MOVE_SPEED;
+        player.x += player.vx * deltaTime;
+        player.y += player.vy * deltaTime;
+        clampPlayerToWorld(player);
+    }
 
     for (let arrow of arrows) {
         // 1. Move arrow
-        //arrow.x += arrow.vx;
-        //arrow.y += arrow.vy;
-
-        arrow.x += arrow.vx * deltaTime;     // 🟢 time-based movement
-        arrow.y += arrow.vy * deltaTime;     // 🟢 time-based movement        
+        arrow.x += arrow.vx * deltaTime;
+        arrow.y += arrow.vy * deltaTime;
 
         // 2. Check world bounds
         if (arrow.x < 0 || arrow.x > WORLD_WIDTH ||
@@ -272,6 +402,7 @@ setInterval(() => {
             const p = players[id];
 
             if (id === arrow.ownerId) continue; // don't hit self
+            if (!p.inGame) continue;
 
             const dx = arrow.x - p.x;
             const dy = arrow.y - p.y;
@@ -287,7 +418,7 @@ setInterval(() => {
 
                     // if a match is active, check for a winner
                     if (matchActive) {
-                        const alive = Object.keys(players).filter(pid => players[pid] && !players[pid].dead);
+                        const alive = Object.keys(players).filter(pid => players[pid] && players[pid].inGame && !players[pid].dead);
                         if (alive.length === 1) {
                             const winnerId = alive[0];
                             matchActive = false;
@@ -307,14 +438,20 @@ setInterval(() => {
     // Remove dead arrows
     arrows = arrows.filter(a => !a.dead);
 
-    // 4. Broadcast updated positions
-    // add serverTime to arrow snapshots so clients can timestamp them
+}, 1000 / SERVER_SIM_HZ);
+
+setInterval(() => {
     const nowTs = Date.now();
-    for (let a of arrows) a.serverTime = nowTs;
+
+    for (let id in players) {
+        if (!players[id]) continue;
+        io.emit('update', { id, position: serializePlayer(players[id]), serverTime: nowTs });
+    }
+
+    for (let arrow of arrows) {
+        arrow.serverTime = nowTs;
+    }
     io.emit("updateArrows", arrows);
-
-}, 1000 / SERVER_LOOP_HZ ); // 20 Hz tick
-
-// END OF NEW CODE
+}, 1000 / SERVER_BROADCAST_HZ);
 
 server.listen(3000, () => console.log('Server running on http://localhost:3000'));

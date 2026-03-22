@@ -16,12 +16,27 @@ const SHOOT_COOLDOWN_MS = 800; // cooldown between shots in milliseconds
 // Centralized player health constant - authoritative value comes from the server
 // Client will receive `maxHp` in the `init`/`gameStart` payload and set this.
 let PLAYER_MAX_HP = null;
+let PLAYER_MOVE_SPEED = 300;
+const WORLD_MARGIN = 40;
+const LOCAL_PLAYER_SNAP_DISTANCE = 48;
+const LOCAL_PLAYER_CORRECTION_LERP = 0.35;
+const LOCAL_PLAYER_MICRO_CORRECTION_LERP = 0.12;
+const INPUT_SEND_RATE_MS = 50;
+const INPUT_IDLE_HEARTBEAT_MS = 100;
+const REMOTE_EXTRAPOLATION_LIMIT_MS = 100;
+let wasd;
+
+window.localInputState = window.localInputState || { up: false, down: false, left: false, right: false };
+window.lastSentInputState = window.lastSentInputState || null;
+window.nextInputSendAt = window.nextInputSendAt || 0;
+window.localInputSeq = window.localInputSeq || 0;
 
 // Interpolation feature flag and defaults
 // Enabled by default for deployed builds — visual-only smoothing for remote players
 window.NET_INTERP_ENABLED = true; // toggle in console
 window.NET_INTERP_DELAY_MS = window.NET_INTERP_DELAY_MS || 120; // render delay in ms
 window.serverTimeOffsetMs = window.serverTimeOffsetMs || 0; // estimated client - server
+window.NET_EXTRAPOLATION_MAX_MS = window.NET_EXTRAPOLATION_MAX_MS || REMOTE_EXTRAPOLATION_LIMIT_MS;
 
 // Client-side periodic net diagnostics (non-functional logging only)
 if (!window._clientNetLogHandle) {
@@ -135,6 +150,15 @@ class LoginScene extends Phaser.Scene {
     }
 }
 
+function applyServerMovementConfig(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    if (typeof payload.moveSpeed === 'number' && payload.moveSpeed > 0) {
+        PLAYER_MOVE_SPEED = payload.moveSpeed;
+    } else if (window.serverConfig && typeof window.serverConfig.moveSpeed === 'number' && window.serverConfig.moveSpeed > 0) {
+        PLAYER_MOVE_SPEED = window.serverConfig.moveSpeed;
+    }
+}
+
 // --- Helper: start network & wire up handlers (extracted from previous window.startGame logic) ---
 function startNetwork(scene, playerName) {
     window.pendingPlayerName = playerName;
@@ -143,6 +167,7 @@ function startNetwork(scene, playerName) {
         (initData) => { // onInit (may include players and maxHp)
             // extract players payload (support old-style payloads too)
             const serverPlayers = initData && initData.players ? initData.players : initData;
+            applyServerMovementConfig(initData);
             // if server provided authoritative maxHp, override client value
             if (initData && typeof initData.maxHp === 'number') PLAYER_MAX_HP = initData.maxHp;
             // store initial server snapshot; create sprites only when in GameScene
@@ -156,6 +181,25 @@ function startNetwork(scene, playerName) {
             // keep a copy of latest server positions for backward compat
             window.serverPlayers = window.serverPlayers || {};
             window.serverPlayers[id] = pos;
+
+            if (typeof pos.vx === 'number') {
+                if (players[id]) {
+                    players[id].lastServerVx = pos.vx;
+                    players[id].lastServerVy = pos.vy || 0;
+                }
+            }
+
+            if (players[id]) {
+                if (typeof pos.hp === 'number') players[id].healthPoints = pos.hp;
+            }
+
+            if (id === myId && players[id]) {
+                players[id].serverReconX = pos.x;
+                players[id].serverReconY = pos.y;
+                players[id].serverReconVx = pos.vx || 0;
+                players[id].serverReconVy = pos.vy || 0;
+                if (pos.name && players[id].nameText) players[id].nameText.setText(pos.name);
+            }
 
             // If interpolation is disabled, update sprites immediately (old behavior)
             if (!window.NET_INTERP_ENABLED) {
@@ -187,6 +231,7 @@ function startNetwork(scene, playerName) {
                 delete players[id];
             }
             if (window.serverPlayers && window.serverPlayers[id]) delete window.serverPlayers[id];
+            if (window.serverSnapshots && window.serverSnapshots[id]) delete window.serverSnapshots[id];
         },
         // lobby updates
         (lobbyData) => {
@@ -209,6 +254,7 @@ function startNetwork(scene, playerName) {
             // support both new payload shape and older shape where payload was players object
             const playersPayload = payload && payload.players ? payload.players : payload;
             window.serverPlayers = playersPayload;
+            applyServerMovementConfig(payload);
 
             // if server provided authoritative maxHp, override client value
             if (payload && typeof payload.maxHp === 'number') {
@@ -230,12 +276,20 @@ function startNetwork(scene, playerName) {
                         try {
                             const px = (playersPayload[id].x !== undefined) ? playersPayload[id].x : (playersPayload[id].position && playersPayload[id].position.x) || players[id].x;
                             const py = (playersPayload[id].y !== undefined) ? playersPayload[id].y : (playersPayload[id].position && playersPayload[id].position.y) || players[id].y;
+                            const pvx = Number(playersPayload[id].vx || 0);
+                            const pvy = Number(playersPayload[id].vy || 0);
                             players[id].x = px;
                             players[id].y = py;
                             players[id].prevX = px;
                             players[id].prevY = py;
                             players[id].lastServerX = px;
                             players[id].lastServerY = py;
+                            players[id].lastServerVx = pvx;
+                            players[id].lastServerVy = pvy;
+                            players[id].serverReconX = px;
+                            players[id].serverReconY = py;
+                            players[id].serverReconVx = pvx;
+                            players[id].serverReconVy = pvy;
                         } catch (e) {
                             // ignore positioning errors
                         }
@@ -545,9 +599,13 @@ function cleanupGameEntities() {
 
     // Clear server snapshot
     try { window.serverPlayers = {}; } catch (e) {}
+    try { window.serverSnapshots = {}; } catch (e) {}
     window.pendingGameOver = null;
     // reset shooting state
     try { canShoot = true; nextAllowedShoot = 0; } catch (e) {}
+    window.localInputState = { up: false, down: false, left: false, right: false };
+    window.lastSentInputState = null;
+    window.nextInputSendAt = 0;
 }
 
 // Register scenes and create the Phaser game instance
@@ -785,6 +843,138 @@ function isTextInputActive() {
     }
 }
 
+function areInputStatesEqual(a, b) {
+    if (!a || !b) return false;
+    return !!a.up === !!b.up && !!a.down === !!b.down && !!a.left === !!b.left && !!a.right === !!b.right;
+}
+
+function getCurrentInputState() {
+    if (isTextInputActive()) {
+        return { up: false, down: false, left: false, right: false };
+    }
+
+    return {
+        left: !!((cursors && cursors.left && cursors.left.isDown) || (wasd && wasd.left && wasd.left.isDown)),
+        right: !!((cursors && cursors.right && cursors.right.isDown) || (wasd && wasd.right && wasd.right.isDown)),
+        up: !!((cursors && cursors.up && cursors.up.isDown) || (wasd && wasd.up && wasd.up.isDown)),
+        down: !!((cursors && cursors.down && cursors.down.isDown) || (wasd && wasd.down && wasd.down.isDown))
+    };
+}
+
+function getInputAxes(inputState) {
+    let axisX = (inputState.right ? 1 : 0) - (inputState.left ? 1 : 0);
+    let axisY = (inputState.down ? 1 : 0) - (inputState.up ? 1 : 0);
+
+    if (axisX !== 0 || axisY !== 0) {
+        const length = Math.hypot(axisX, axisY) || 1;
+        axisX /= length;
+        axisY /= length;
+    }
+
+    return { axisX, axisY };
+}
+
+function applyMovementInput(player, inputState, deltaSeconds) {
+    const { axisX, axisY } = getInputAxes(inputState);
+    player.predictedVx = axisX * PLAYER_MOVE_SPEED;
+    player.predictedVy = axisY * PLAYER_MOVE_SPEED;
+    player.prevX = player.x;
+    player.prevY = player.y;
+    player.x += player.predictedVx * deltaSeconds;
+    player.y += player.predictedVy * deltaSeconds;
+    player.x = Phaser.Math.Clamp(player.x, WORLD_MARGIN, config.width - WORLD_MARGIN);
+    player.y = Phaser.Math.Clamp(player.y, WORLD_MARGIN, config.height - WORLD_MARGIN);
+
+    if (Math.abs(axisY) > 0) {
+        player.facing = axisY < 0 ? 'up' : 'down';
+    } else if (Math.abs(axisX) > 0) {
+        player.facing = axisX < 0 ? 'left' : 'right';
+    }
+
+    return axisX !== 0 || axisY !== 0;
+}
+
+function playLocalAnimation(player, isMoving) {
+    if (isMoving) {
+        if (player.facing === 'left') {
+            player.anims.play('right', true);
+            player.setFlipX(true);
+        } else if (player.facing === 'right') {
+            player.anims.play('right', true);
+            player.setFlipX(false);
+        } else {
+            player.anims.play(player.facing, true);
+        }
+        return;
+    }
+
+    if (player.facing === 'left') {
+        player.anims.play('idle-right', true);
+        player.setFlipX(true);
+    } else if (player.facing === 'right') {
+        player.anims.play('idle-right', true);
+        player.setFlipX(false);
+    } else {
+        player.anims.play('idle-' + player.facing, true);
+        player.setFlipX(false);
+    }
+}
+
+function sendCurrentInputState(inputState, force = false) {
+    const now = Date.now();
+    const isMoving = !!(inputState.left || inputState.right || inputState.up || inputState.down);
+    const requiredInterval = isMoving ? INPUT_SEND_RATE_MS : INPUT_IDLE_HEARTBEAT_MS;
+    const changed = !areInputStatesEqual(window.lastSentInputState, inputState);
+
+    if (!force && !changed && now < (window.nextInputSendAt || 0)) {
+        return;
+    }
+
+    window.localInputSeq = (window.localInputSeq || 0) + 1;
+    sendMove({
+        input: {
+            up: !!inputState.up,
+            down: !!inputState.down,
+            left: !!inputState.left,
+            right: !!inputState.right
+        },
+        seq: window.localInputSeq,
+        clientTime: now
+    });
+
+    window.lastSentInputState = {
+        up: !!inputState.up,
+        down: !!inputState.down,
+        left: !!inputState.left,
+        right: !!inputState.right
+    };
+    window.nextInputSendAt = now + requiredInterval;
+}
+
+function reconcileLocalPlayer(player) {
+    if (!player || !Number.isFinite(player.serverReconX) || !Number.isFinite(player.serverReconY)) {
+        return;
+    }
+
+    const dx = player.serverReconX - player.x;
+    const dy = player.serverReconY - player.y;
+    const distance = Math.hypot(dx, dy);
+
+    if (distance >= LOCAL_PLAYER_SNAP_DISTANCE) {
+        player.x = player.serverReconX;
+        player.y = player.serverReconY;
+        return;
+    }
+
+    if (distance < 0.5) {
+        return;
+    }
+
+    const correctionLerp = distance > 8 ? LOCAL_PLAYER_CORRECTION_LERP : LOCAL_PLAYER_MICRO_CORRECTION_LERP;
+    player.x += dx * correctionLerp;
+    player.y += dy * correctionLerp;
+}
+
 function handleDeath(player) {
 
     player.dead = true;
@@ -871,125 +1061,28 @@ function drawHealthBar(player) {
 }
 
 
-function update() {
+function update(time, delta) {
     if (!myId) return;
 
-    const speed = 5; // adjust to taste
     const player = players[myId];
     // Guard against cases where players were cleaned up (e.g. returning to lobby)
     if (!player) {
         return;
     }
-    // use top-level helper to avoid per-frame allocations
+    const deltaSeconds = Math.min((delta || 16.6667) / 1000, 0.05);
 
-if (typeof update.Count === 'undefined') {
-    update.Count = 0;
-}
+    if (player.body) {
+        player.body.setVelocity(0);
+    }
 
+    const currentInputState = player.dead ? { up: false, down: false, left: false, right: false } : getCurrentInputState();
+    window.localInputState = currentInputState;
+    sendCurrentInputState(currentInputState);
 
-// Debug: only log player flags when present
-if (player) {
-    console.log(
-        "visible:", player.visible,
-        "renderable:", player.renderable,
-        "active:", player.active,
-        "inCamera:", player.inCamera
-    );
-}
-
-    if ( player.dead == false ) 
-    {
-        // If the user is typing into an input (e.g. the join name box), do not interpret
-        // WASD / arrow keys as movement. This prevents characters like 'a' from being
-        // swallowed by the game.
-        if (isTextInputActive()) {
-            // ensure we don't send movement while typing
-            console.log('Text input active - movement blocked');
-        } else {
-            // stop any previous movement
-            player.body.setVelocity(0);
-
-            // movement flags
-            let moving = false;
-            let animKey = '';
-
-            const margin = 40;
-
-            // Arrow keys / WASD
-            if (cursors.left.isDown || wasd.left.isDown) {
-
-                console.log('Moving left');
-
-                if ( player.x - speed >= margin )
-                {
-                    player.x -= speed;
-                }
-                animKey = 'right';
-                player.setFlipX(true);
-                player.facing = 'left';
-                moving = true;
-            }
-            else if (cursors.right.isDown || wasd.right.isDown) {
-
-                console.log('Moving right');
-
-                if ( player.x + speed <= config.width - margin )
-                {
-                    player.x += speed;
-                }
-                animKey = 'right';
-                player.setFlipX(false);        
-                player.facing = 'right';
-                moving = true;
-            }
-
-            if (cursors.up.isDown || wasd.up.isDown) {
-
-                console.log('Moving up');
-
-                if ( player.y - speed >= margin )
-                {
-                    player.y -= speed;
-                }
-                animKey = 'up';
-                player.facing = 'up';
-                moving = true;
-            }
-            else if (cursors.down.isDown || wasd.down.isDown) {
-
-                console.log('Moving down');
-
-                if ( player.y + speed <= config.height - margin )
-                {
-                    player.y += speed;
-                }
-                animKey = 'down';
-                player.facing = 'down';
-                moving = true;
-            }
-
-            // animation
-            if (moving) {
-                console.log("animKey:", animKey);
-                player.anims.play(animKey, true);
-            } else {
-                if ( player.facing == 'left' )
-                {
-                    player.anims.play('idle-right', true);
-                    player.setFlipX(true); 
-                }
-                else
-                {
-                    player.anims.play('idle-' + player.facing, true);
-                    player.setFlipX(false); 
-                }
-            }
-
-            // tell server about movement
-            if (moving) {
-                sendMove({ x: player.x, y: player.y } );
-            }
-        }
+    if (player.dead == false) {
+        const moving = applyMovementInput(player, currentInputState, deltaSeconds);
+        playLocalAnimation(player, moving);
+        reconcileLocalPlayer(player);
     }
 
     for (let id in players) 
@@ -1111,7 +1204,7 @@ function addPlayer(scene, id, info) {
     players[id].anims.play('idle-down', true);
 
     players[id].healthBar = healthBar;
-    players[id].healthPoints = PLAYER_MAX_HP;
+    players[id].healthPoints = (typeof info.hp === 'number') ? info.hp : PLAYER_MAX_HP;
     players[id].scene = scene;
     players[id].dead = false;
 
@@ -1137,6 +1230,12 @@ function addPlayer(scene, id, info) {
     // record last server-known position
     players[id].lastServerX = players[id].x;
     players[id].lastServerY = players[id].y;
+    players[id].lastServerVx = Number(info.vx || 0);
+    players[id].lastServerVy = Number(info.vy || 0);
+    players[id].serverReconX = players[id].x;
+    players[id].serverReconY = players[id].y;
+    players[id].serverReconVx = Number(info.vx || 0);
+    players[id].serverReconVy = Number(info.vy || 0);
 }
 
 // Interpolation helper: find interpolated position for a player at a given server-time
@@ -1153,15 +1252,41 @@ function getInterpolatedPosition(id, renderTs) {
             if (a.t <= renderTs && renderTs <= b.t) {
                 const span = b.t - a.t || 1;
                 const ratio = (renderTs - a.t) / span;
-                return { x: a.x + (b.x - a.x) * ratio, y: a.y + (b.y - a.y) * ratio };
+                return {
+                    x: a.x + (b.x - a.x) * ratio,
+                    y: a.y + (b.y - a.y) * ratio,
+                    vx: (a.vx || 0) + ((b.vx || 0) - (a.vx || 0)) * ratio,
+                    vy: (a.vy || 0) + ((b.vy || 0) - (a.vy || 0)) * ratio
+                };
             }
         }
 
         // if renderTs is before first snapshot, return first
-        if (renderTs <= buf[0].t) return { x: buf[0].x, y: buf[0].y };
-        // if after last, return last
+        if (renderTs <= buf[0].t) return { x: buf[0].x, y: buf[0].y, vx: buf[0].vx || 0, vy: buf[0].vy || 0 };
+
+        // if after last, extrapolate briefly using last known velocity
         const last = buf[buf.length - 1];
-        return { x: last.x, y: last.y };
+        const previous = buf.length > 1 ? buf[buf.length - 2] : null;
+        let vx = Number.isFinite(last.vx) ? last.vx : 0;
+        let vy = Number.isFinite(last.vy) ? last.vy : 0;
+
+        if ((!vx && !vy) && previous && last.t > previous.t) {
+            const dtSeconds = (last.t - previous.t) / 1000;
+            if (dtSeconds > 0) {
+                vx = (last.x - previous.x) / dtSeconds;
+                vy = (last.y - previous.y) / dtSeconds;
+            }
+        }
+
+        const extraMs = Math.max(0, Math.min(renderTs - last.t, window.NET_EXTRAPOLATION_MAX_MS || REMOTE_EXTRAPOLATION_LIMIT_MS));
+        const extraSeconds = extraMs / 1000;
+        return {
+            x: Phaser.Math.Clamp(last.x + vx * extraSeconds, WORLD_MARGIN, config.width - WORLD_MARGIN),
+            y: Phaser.Math.Clamp(last.y + vy * extraSeconds, WORLD_MARGIN, config.height - WORLD_MARGIN),
+            vx,
+            vy,
+            extrapolated: extraMs > 0
+        };
     } catch (e) {
         return null;
     }
@@ -1176,6 +1301,8 @@ function applyInterpolatedPosition(sprite, playerId, renderTs) {
             sprite.prevY = sprite.y;
             sprite.x = ipos.x;
             sprite.y = ipos.y;
+            sprite.netVx = ipos.vx || 0;
+            sprite.netVy = ipos.vy || 0;
             return true;
         }
 
@@ -1187,6 +1314,8 @@ function applyInterpolatedPosition(sprite, playerId, renderTs) {
             sprite.prevY = sprite.y;
             sprite.x = Number(last.x || sprite.x || 0);
             sprite.y = Number(last.y || sprite.y || 0);
+            sprite.netVx = Number(last.vx || 0);
+            sprite.netVy = Number(last.vy || 0);
             return true;
         }
 

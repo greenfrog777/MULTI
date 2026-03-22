@@ -15,6 +15,12 @@ function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattl
     // Initial setup: called once when connecting
     socket.on('init', data => {
         myId = data.myId;
+        window.serverConfig = {
+            moveSpeed: data.moveSpeed,
+            serverSimHz: data.serverSimHz,
+            serverBroadcastHz: data.serverBroadcastHz,
+            inputPersistMs: data.inputPersistMs
+        };
         for (let id in data.players) {
             playerColours[id] = data.players[id].colour; // server-assigned colour
         }
@@ -63,7 +69,7 @@ function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattl
             const buf = window.serverSnapshots[id] || (window.serverSnapshots[id] = []);
             const ts = (typeof data.serverTime === 'number') ? data.serverTime : Date.now();
             // push snapshot and clamp buffer length
-            buf.push({ x: position.x, y: position.y, t: ts });
+            buf.push({ x: position.x, y: position.y, vx: position.vx || 0, vy: position.vy || 0, t: ts });
             if (buf.length > 200) buf.shift();
 
             // estimate client-server clock offset (clientNow - serverTime)
@@ -102,6 +108,12 @@ function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattl
         // Replace serverSnapshots so interpolation starts from authoritative
         // match-start positions only, without blending from stale lobby data.
         try {
+            window.serverConfig = {
+                moveSpeed: data.moveSpeed,
+                serverSimHz: data.serverSimHz,
+                serverBroadcastHz: data.serverBroadcastHz,
+                inputPersistMs: data.inputPersistMs
+            };
             const serverTime = (typeof data.serverTime === 'number') ? data.serverTime : Date.now();
             const playersPayload = data && data.players ? data.players : data;
             const nextSnapshots = {};
@@ -111,7 +123,7 @@ function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattl
                         const p = playersPayload[id] || {};
                         const px = Number((p.x !== undefined) ? p.x : (p.position && p.position.x) || 0);
                         const py = Number((p.y !== undefined) ? p.y : (p.position && p.position.y) || 0);
-                        nextSnapshots[id] = [{ x: px, y: py, t: serverTime }];
+                        nextSnapshots[id] = [{ x: px, y: py, vx: Number(p.vx || 0), vy: Number(p.vy || 0), t: serverTime }];
                     } catch (e) {
                         // ignore per-player errors
                     }
