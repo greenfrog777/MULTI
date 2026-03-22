@@ -196,6 +196,10 @@ function startNetwork(scene, playerName) {
         },
         // startBattle signal
         () => {
+            // Clear stale lobby snapshots/positions so GameScene does not spawn
+            // players at old pre-match coordinates before `gameStart` arrives.
+            window.serverPlayers = null;
+            window.serverSnapshots = {};
             // server says start — transition to GameScene
             if (scene && scene.scene) scene.scene.start('GameScene');
             else window.startRequested = true;
@@ -220,6 +224,20 @@ function startNetwork(scene, playerName) {
                             players[id].healthPoints = playersPayload[id].hp;
                         } else {
                             players[id].healthPoints = PLAYER_MAX_HP;
+                        }
+                        // Also update position immediately and seed prev positions so
+                        // interpolation does not cause artificial movement at match start
+                        try {
+                            const px = (playersPayload[id].x !== undefined) ? playersPayload[id].x : (playersPayload[id].position && playersPayload[id].position.x) || players[id].x;
+                            const py = (playersPayload[id].y !== undefined) ? playersPayload[id].y : (playersPayload[id].position && playersPayload[id].position.y) || players[id].y;
+                            players[id].x = px;
+                            players[id].y = py;
+                            players[id].prevX = px;
+                            players[id].prevY = py;
+                            players[id].lastServerX = px;
+                            players[id].lastServerY = py;
+                        } catch (e) {
+                            // ignore positioning errors
                         }
                     } else {
                         addPlayer(scene, id, playersPayload[id]);
@@ -965,20 +983,9 @@ if (player) {
         if (window.NET_INTERP_ENABLED) {
             // compute render timestamp in server time
             const renderTs = Date.now() - (window.NET_INTERP_DELAY_MS || 120) - (window.serverTimeOffsetMs || 0);
-            const p = getInterpolatedPosition(id, renderTs);
-            if (p) {
-                enemy.prevX = enemy.x;
-                enemy.prevY = enemy.y;
-                enemy.x = p.x;
-                enemy.y = p.y;
-            } else {
-                // fallback to last server-known position if available
-                if (typeof enemy.lastServerX === 'number') {
-                    enemy.prevX = enemy.x;
-                    enemy.prevY = enemy.y;
-                    enemy.x = enemy.lastServerX;
-                    enemy.y = enemy.lastServerY;
-                }
+            const applied = applyInterpolatedPosition(enemy, id, renderTs);
+            if (!applied) {
+                // nothing applied; keep existing sprite position
             }
             // drive animation from motion
             updateFacing(enemy);
@@ -1104,6 +1111,12 @@ function addPlayer(scene, id, info) {
     players[id].setVisible(true);
     players[id].setActive(true);
     players[id].cull = false;
+    // Initialize previous positions to avoid interpolation introducing movement on spawn
+    players[id].prevX = players[id].x;
+    players[id].prevY = players[id].y;
+    // record last server-known position
+    players[id].lastServerX = players[id].x;
+    players[id].lastServerY = players[id].y;
 }
 
 // Interpolation helper: find interpolated position for a player at a given server-time
@@ -1131,6 +1144,37 @@ function getInterpolatedPosition(id, renderTs) {
         return { x: last.x, y: last.y };
     } catch (e) {
         return null;
+    }
+}
+
+// Apply an interpolated position to a Phaser sprite safely.
+function applyInterpolatedPosition(sprite, playerId, renderTs) {
+    try {
+        const ipos = getInterpolatedPosition(playerId, renderTs);
+        if (ipos && Number.isFinite(ipos.x) && Number.isFinite(ipos.y)) {
+            sprite.prevX = sprite.x;
+            sprite.prevY = sprite.y;
+            sprite.x = ipos.x;
+            sprite.y = ipos.y;
+            return true;
+        }
+
+        // fallback to last snapshot in buffer
+        const buf = (window.serverSnapshots && window.serverSnapshots[playerId]) || [];
+        if (buf.length) {
+            const last = buf[buf.length - 1];
+            sprite.prevX = sprite.x;
+            sprite.prevY = sprite.y;
+            sprite.x = Number(last.x || sprite.x || 0);
+            sprite.y = Number(last.y || sprite.y || 0);
+            return true;
+        }
+
+        // nothing to do; leave sprite where it is
+        return false;
+    } catch (e) {
+        console.warn('applyInterpolatedPosition error', e);
+        return false;
     }
 }
 

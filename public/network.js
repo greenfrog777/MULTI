@@ -99,6 +99,29 @@ function connectToServer(onInit, onUpdate, onRemove, onLobbyUpdate, onStartBattl
 
     // Server sends full game start payload
     socket.on('gameStart', data => {
+        // Replace serverSnapshots so interpolation starts from authoritative
+        // match-start positions only, without blending from stale lobby data.
+        try {
+            const serverTime = (typeof data.serverTime === 'number') ? data.serverTime : Date.now();
+            const playersPayload = data && data.players ? data.players : data;
+            const nextSnapshots = {};
+            if (playersPayload && typeof playersPayload === 'object') {
+                for (let id in playersPayload) {
+                    try {
+                        const p = playersPayload[id] || {};
+                        const px = Number((p.x !== undefined) ? p.x : (p.position && p.position.x) || 0);
+                        const py = Number((p.y !== undefined) ? p.y : (p.position && p.position.y) || 0);
+                        nextSnapshots[id] = [{ x: px, y: py, t: serverTime }];
+                    } catch (e) {
+                        // ignore per-player errors
+                    }
+                }
+            }
+            window.serverSnapshots = nextSnapshots;
+        } catch (e) {
+            // ignore seeding errors
+        }
+
         if (onGameStart) onGameStart(data);
     });
 
