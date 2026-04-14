@@ -24,7 +24,13 @@ const LOCAL_PLAYER_MICRO_CORRECTION_LERP = 0.12;
 const INPUT_SEND_RATE_MS = 50;
 const INPUT_IDLE_HEARTBEAT_MS = 100;
 const REMOTE_EXTRAPOLATION_LIMIT_MS = 100;
+const PLAYER_COLLISION_RADIUS = 18;
 let wasd;
+let wallGraphics = null;
+
+function getGameAudio() {
+    return window.GameAudio || null;
+}
 
 window.localInputState = window.localInputState || { up: false, down: false, left: false, right: false };
 window.lastSentInputState = window.lastSentInputState || null;
@@ -156,6 +162,10 @@ function applyServerMovementConfig(payload) {
         PLAYER_MOVE_SPEED = payload.moveSpeed;
     } else if (window.serverConfig && typeof window.serverConfig.moveSpeed === 'number' && window.serverConfig.moveSpeed > 0) {
         PLAYER_MOVE_SPEED = window.serverConfig.moveSpeed;
+    }
+
+    if (Array.isArray(payload.walls)) {
+        window.battleWalls = payload.walls.map(wall => ({ ...wall }));
     }
 }
 
@@ -540,6 +550,11 @@ class VictoryScene extends Phaser.Scene {
 // Called when GameScene becomes active to setup arrow handlers and pointer input
 function setupGameForScene(scene) {
     if (!socket) return;
+    const audio = getGameAudio();
+    if (audio && typeof audio.unlock === 'function') {
+        audio.unlock();
+    }
+    renderBattleWalls(scene);
     // Setup arrow handlers now that socket exists
     setupArrowHandlers(scene, socket);
 
@@ -600,6 +615,14 @@ function cleanupGameEntities() {
     // Clear server snapshot
     try { window.serverPlayers = {}; } catch (e) {}
     try { window.serverSnapshots = {}; } catch (e) {}
+    try {
+        if (wallGraphics) {
+            wallGraphics.destroy();
+            wallGraphics = null;
+        }
+    } catch (e) {
+        console.warn('cleanupGameEntities: error destroying wall graphics', e);
+    }
     window.pendingGameOver = null;
     // reset shooting state
     try { canShoot = true; nextAllowedShoot = 0; } catch (e) {}
@@ -688,14 +711,92 @@ function create() {
 
 let arrowList = {}; // key: arrow id, value: Phaser sprite
 
+function getBattleWalls() {
+    return Array.isArray(window.battleWalls) ? window.battleWalls : [];
+}
+
+function renderBattleWalls(scene) {
+    const walls = getBattleWalls();
+    if (!scene || !scene.add) return;
+
+    if (wallGraphics) {
+        wallGraphics.destroy();
+        wallGraphics = null;
+    }
+
+    if (!walls.length) return;
+
+    wallGraphics = scene.add.graphics();
+    wallGraphics.setDepth(-5);
+
+    for (const wall of walls) {
+        const fillColour = wall.colour || '#5a4631';
+        const strokeColour = wall.stroke || '#2f2418';
+        wallGraphics.fillStyle(Phaser.Display.Color.HexStringToColor(fillColour).color, 1);
+        wallGraphics.fillRect(wall.x, wall.y, wall.w, wall.h);
+        wallGraphics.lineStyle(3, Phaser.Display.Color.HexStringToColor(strokeColour).color, 1);
+        wallGraphics.strokeRect(wall.x, wall.y, wall.w, wall.h);
+        wallGraphics.fillStyle(0xffffff, 0.08);
+        wallGraphics.fillRect(wall.x + 4, wall.y + 4, Math.max(0, wall.w - 8), Math.max(0, Math.min(8, wall.h - 8)));
+    }
+}
+
+function resolveWallAxisCollision(candidateAlongAxis, fixedAxis, previousAlongAxis, axis) {
+    const walls = getBattleWalls();
+
+    for (const wall of walls) {
+        if (axis === 'x') {
+            if (fixedAxis + PLAYER_COLLISION_RADIUS <= wall.y || fixedAxis - PLAYER_COLLISION_RADIUS >= wall.y + wall.h) continue;
+            if (candidateAlongAxis + PLAYER_COLLISION_RADIUS <= wall.x || candidateAlongAxis - PLAYER_COLLISION_RADIUS >= wall.x + wall.w) continue;
+
+            if (candidateAlongAxis > previousAlongAxis) {
+                candidateAlongAxis = wall.x - PLAYER_COLLISION_RADIUS;
+            } else if (candidateAlongAxis < previousAlongAxis) {
+                candidateAlongAxis = wall.x + wall.w + PLAYER_COLLISION_RADIUS;
+            } else {
+                const pushLeft = Math.abs(candidateAlongAxis - (wall.x - PLAYER_COLLISION_RADIUS));
+                const pushRight = Math.abs((wall.x + wall.w + PLAYER_COLLISION_RADIUS) - candidateAlongAxis);
+                candidateAlongAxis = pushLeft <= pushRight ? wall.x - PLAYER_COLLISION_RADIUS : wall.x + wall.w + PLAYER_COLLISION_RADIUS;
+            }
+            continue;
+        }
+
+        if (fixedAxis + PLAYER_COLLISION_RADIUS <= wall.x || fixedAxis - PLAYER_COLLISION_RADIUS >= wall.x + wall.w) continue;
+        if (candidateAlongAxis + PLAYER_COLLISION_RADIUS <= wall.y || candidateAlongAxis - PLAYER_COLLISION_RADIUS >= wall.y + wall.h) continue;
+
+        if (candidateAlongAxis > previousAlongAxis) {
+            candidateAlongAxis = wall.y - PLAYER_COLLISION_RADIUS;
+        } else if (candidateAlongAxis < previousAlongAxis) {
+            candidateAlongAxis = wall.y + wall.h + PLAYER_COLLISION_RADIUS;
+        } else {
+            const pushUp = Math.abs(candidateAlongAxis - (wall.y - PLAYER_COLLISION_RADIUS));
+            const pushDown = Math.abs((wall.y + wall.h + PLAYER_COLLISION_RADIUS) - candidateAlongAxis);
+            candidateAlongAxis = pushUp <= pushDown ? wall.y - PLAYER_COLLISION_RADIUS : wall.y + wall.h + PLAYER_COLLISION_RADIUS;
+        }
+    }
+
+    return candidateAlongAxis;
+}
+
+function resolveLocalWallCollisions(player, nextX, nextY) {
+    const resolvedX = resolveWallAxisCollision(nextX, player.y, player.x, 'x');
+    const resolvedY = resolveWallAxisCollision(nextY, resolvedX, player.y, 'y');
+    return { x: resolvedX, y: resolvedY };
+}
+
 function setupArrowHandlers(scene, socket) {
     // Remove previous handlers first to avoid duplicate handlers when re-entering scene
     try { socket.off('spawnArrow'); } catch (e) {}
     try { socket.off('updateArrows'); } catch (e) {}
     try { socket.off('playerHit'); } catch (e) {}
+    try { socket.off('arrowImpact'); } catch (e) {}
 
     // When the server spawns a new arrow
     socket.on("spawnArrow", data => {
+        const audio = getGameAudio();
+        if (audio && typeof audio.playArrowFire === 'function') {
+            audio.playArrowFire();
+        }
         // create a sprite for the arrow
         const arrowSprite = scene.add.sprite(data.x, data.y, 'arrows', 74);
         arrowSprite.rotation = Phaser.Math.DegToRad(data.angle ) + Phaser.Math.DegToRad(90); // point correctly
@@ -741,6 +842,26 @@ function setupArrowHandlers(scene, socket) {
                 arrowList[ownerId].destroy();
                 delete arrowList[ownerId];
             }
+        }
+    });
+
+    socket.on('arrowImpact', data => {
+        const arrow = arrowList[data.ownerId];
+        if (arrow) {
+            arrow.destroy();
+            delete arrowList[data.ownerId];
+        }
+
+        const audio = getGameAudio();
+        if (!audio) return;
+
+        if (data.type === 'player' && typeof audio.playArrowHitPlayer === 'function') {
+            audio.playArrowHitPlayer();
+            return;
+        }
+
+        if (data.type === 'obstacle' && typeof audio.playArrowHitObstacle === 'function') {
+            audio.playArrowHitObstacle();
         }
     });
 
@@ -880,8 +1001,13 @@ function applyMovementInput(player, inputState, deltaSeconds) {
     player.predictedVy = axisY * PLAYER_MOVE_SPEED;
     player.prevX = player.x;
     player.prevY = player.y;
-    player.x += player.predictedVx * deltaSeconds;
-    player.y += player.predictedVy * deltaSeconds;
+    const resolvedPosition = resolveLocalWallCollisions(
+        player,
+        player.x + player.predictedVx * deltaSeconds,
+        player.y + player.predictedVy * deltaSeconds
+    );
+    player.x = resolvedPosition.x;
+    player.y = resolvedPosition.y;
     player.x = Phaser.Math.Clamp(player.x, WORLD_MARGIN, config.width - WORLD_MARGIN);
     player.y = Phaser.Math.Clamp(player.y, WORLD_MARGIN, config.height - WORLD_MARGIN);
 

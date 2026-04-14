@@ -24,6 +24,15 @@ const {
     INPUT_PERSIST_MS
 } = require('./shared/constants');
 
+const PLAYER_COLLISION_RADIUS = 18;
+const BATTLE_WALLS = Object.freeze([
+    { id: 'center-pillar', x: 364, y: 208, w: 72, h: 184, colour: '#5a4631', stroke: '#2f2418' },
+    { id: 'top-cover', x: 308, y: 126, w: 184, h: 28, colour: '#6b553d', stroke: '#392c1d' },
+    { id: 'left-cover', x: 176, y: 246, w: 124, h: 30, colour: '#6b553d', stroke: '#392c1d' },
+    { id: 'right-cover', x: 500, y: 246, w: 124, h: 30, colour: '#6b553d', stroke: '#392c1d' },
+    { id: 'bottom-cover', x: 308, y: 446, w: 184, h: 28, colour: '#5a4631', stroke: '#2f2418' }
+]);
+
 function createNeutralInput() {
     return { up: false, down: false, left: false, right: false };
 }
@@ -66,6 +75,68 @@ function serializePlayersMap(sourcePlayers) {
 function clampPlayerToWorld(player) {
     player.x = Math.max(WORLD_MARGIN, Math.min(WORLD_WIDTH - WORLD_MARGIN, player.x));
     player.y = Math.max(WORLD_MARGIN, Math.min(WORLD_HEIGHT - WORLD_MARGIN, player.y));
+}
+
+function serializeWalls() {
+    return BATTLE_WALLS.map(wall => ({
+        id: wall.id,
+        x: wall.x,
+        y: wall.y,
+        w: wall.w,
+        h: wall.h,
+        colour: wall.colour,
+        stroke: wall.stroke
+    }));
+}
+
+function circleIntersectsWall(cx, cy, radius, wall) {
+    const closestX = Math.max(wall.x, Math.min(cx, wall.x + wall.w));
+    const closestY = Math.max(wall.y, Math.min(cy, wall.y + wall.h));
+    const dx = cx - closestX;
+    const dy = cy - closestY;
+    return (dx * dx + dy * dy) < (radius * radius);
+}
+
+function resolveWallAxisCollision(candidateAlongAxis, fixedAxis, previousAlongAxis, axis) {
+    for (const wall of BATTLE_WALLS) {
+        if (axis === 'x') {
+            if (fixedAxis + PLAYER_COLLISION_RADIUS <= wall.y || fixedAxis - PLAYER_COLLISION_RADIUS >= wall.y + wall.h) continue;
+            if (candidateAlongAxis + PLAYER_COLLISION_RADIUS <= wall.x || candidateAlongAxis - PLAYER_COLLISION_RADIUS >= wall.x + wall.w) continue;
+
+            if (candidateAlongAxis > previousAlongAxis) {
+                candidateAlongAxis = wall.x - PLAYER_COLLISION_RADIUS;
+            } else if (candidateAlongAxis < previousAlongAxis) {
+                candidateAlongAxis = wall.x + wall.w + PLAYER_COLLISION_RADIUS;
+            } else {
+                const pushLeft = Math.abs(candidateAlongAxis - (wall.x - PLAYER_COLLISION_RADIUS));
+                const pushRight = Math.abs((wall.x + wall.w + PLAYER_COLLISION_RADIUS) - candidateAlongAxis);
+                candidateAlongAxis = pushLeft <= pushRight ? wall.x - PLAYER_COLLISION_RADIUS : wall.x + wall.w + PLAYER_COLLISION_RADIUS;
+            }
+            continue;
+        }
+
+        if (fixedAxis + PLAYER_COLLISION_RADIUS <= wall.x || fixedAxis - PLAYER_COLLISION_RADIUS >= wall.x + wall.w) continue;
+        if (candidateAlongAxis + PLAYER_COLLISION_RADIUS <= wall.y || candidateAlongAxis - PLAYER_COLLISION_RADIUS >= wall.y + wall.h) continue;
+
+        if (candidateAlongAxis > previousAlongAxis) {
+            candidateAlongAxis = wall.y - PLAYER_COLLISION_RADIUS;
+        } else if (candidateAlongAxis < previousAlongAxis) {
+            candidateAlongAxis = wall.y + wall.h + PLAYER_COLLISION_RADIUS;
+        } else {
+            const pushUp = Math.abs(candidateAlongAxis - (wall.y - PLAYER_COLLISION_RADIUS));
+            const pushDown = Math.abs((wall.y + wall.h + PLAYER_COLLISION_RADIUS) - candidateAlongAxis);
+            candidateAlongAxis = pushUp <= pushDown ? wall.y - PLAYER_COLLISION_RADIUS : wall.y + wall.h + PLAYER_COLLISION_RADIUS;
+        }
+    }
+
+    return candidateAlongAxis;
+}
+
+function resolvePlayerWallCollisions(player, nextX, nextY) {
+    let resolvedX = resolveWallAxisCollision(nextX, player.y, player.x, 'x');
+    let resolvedY = resolveWallAxisCollision(nextY, resolvedX, player.y, 'y');
+
+    return { x: resolvedX, y: resolvedY };
 }
 
 io.on('connection', socket => {
@@ -127,6 +198,7 @@ io.on('connection', socket => {
             socket.emit('init', {
                 players: serializePlayersMap(players),
                 myId: id,
+                walls: serializeWalls(),
                 maxHp: PLAYER_MAX_HP,
                 moveSpeed: PLAYER_MOVE_SPEED,
                 serverSimHz: SERVER_SIM_HZ,
@@ -231,6 +303,7 @@ io.on('connection', socket => {
         // include authoritative max HP so clients display correctly
         io.emit('gameStart', {
             players: serializePlayersMap(players),
+            walls: serializeWalls(),
             maxHp: PLAYER_MAX_HP,
             moveSpeed: PLAYER_MOVE_SPEED,
             serverSimHz: SERVER_SIM_HZ,
@@ -327,6 +400,17 @@ function spawnArrow(ownerId, x, y, angle) {
     io.emit("spawnArrow", arrows[arrows.length - 1]);
 }
 
+function emitArrowImpact(payload) {
+    io.emit('arrowImpact', {
+        ownerId: payload.ownerId,
+        targetId: payload.targetId || null,
+        type: payload.type,
+        x: payload.x,
+        y: payload.y,
+        serverTime: Date.now()
+    });
+}
+
 let lastTickTime = Date.now();
 
 // Main authoritative simulation loop
@@ -377,8 +461,12 @@ setInterval(() => {
 
         player.vx = axisX * PLAYER_MOVE_SPEED;
         player.vy = axisY * PLAYER_MOVE_SPEED;
-        player.x += player.vx * deltaTime;
-        player.y += player.vy * deltaTime;
+
+        const nextX = player.x + player.vx * deltaTime;
+        const nextY = player.y + player.vy * deltaTime;
+        const resolvedPosition = resolvePlayerWallCollisions(player, nextX, nextY);
+        player.x = resolvedPosition.x;
+        player.y = resolvedPosition.y;
         clampPlayerToWorld(player);
     }
 
@@ -397,6 +485,23 @@ setInterval(() => {
             continue;
         }
 
+        for (const wall of BATTLE_WALLS) {
+            if (circleIntersectsWall(arrow.x, arrow.y, ARROW_RADIUS, wall)) {
+                arrow.dead = true;
+                emitArrowImpact({
+                    ownerId: arrow.ownerId,
+                    type: 'obstacle',
+                    x: arrow.x,
+                    y: arrow.y
+                });
+                break;
+            }
+        }
+
+        if (arrow.dead) {
+            continue;
+        }
+
         // 3. Check collision with players
         for (let id in players) {
             const p = players[id];
@@ -411,6 +516,13 @@ setInterval(() => {
             if (distSq < (ARROW_RADIUS + PLAYER_RADIUS) ** 2) {
                 arrow.dead = true;
                 p.hp -= 1;  // apply damage
+                emitArrowImpact({
+                    ownerId: arrow.ownerId,
+                    targetId: id,
+                    type: 'player',
+                    x: arrow.x,
+                    y: arrow.y
+                });
                 if ( p.hp <= 0 )
                 {
                     // mark dead
