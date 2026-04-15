@@ -25,6 +25,7 @@ const {
 } = require('./shared/constants');
 
 const PLAYER_COLLISION_RADIUS = 18;
+const GAME_OVER_DELAY_MS = 1200;
 const BATTLE_WALLS = Object.freeze([
     { id: 'center-pillar', x: 364, y: 208, w: 72, h: 184, colour: '#5a4631', stroke: '#2f2418' },
     { id: 'top-cover', x: 308, y: 126, w: 184, h: 28, colour: '#6b553d', stroke: '#392c1d' },
@@ -294,6 +295,10 @@ io.on('connection', socket => {
         }
 
         // mark match active
+        if (pendingGameOverTimeout) {
+            clearTimeout(pendingGameOverTimeout);
+            pendingGameOverTimeout = null;
+        }
         matchActive = true;
 
         // Notify clients to transition to the game
@@ -319,6 +324,7 @@ io.on('connection', socket => {
     socket.on('shootArrowNew', data => {
         // ignore if player hasn't joined yet
         if (!players[id]) return;
+        if (!matchActive || !players[id].inGame || players[id].dead) return;
 
         // console.log('Server received shootArrowNew from', socket.id, 'data:', data);
 
@@ -383,6 +389,7 @@ const ARROW_RADIUS = 10;    // adjust to match your sprite
 const PLAYER_RADIUS = 20;   // approximate for collision
 
 let arrows = []; // array of active arrows
+let pendingGameOverTimeout = null;
 
 // Call this when a player shoots
 function spawnArrow(ownerId, x, y, angle) {
@@ -534,8 +541,26 @@ setInterval(() => {
                         if (alive.length === 1) {
                             const winnerId = alive[0];
                             matchActive = false;
-                            // emit game over with winner details
-                            io.emit('gameOver', { winnerId, winnerName: players[winnerId].name, colour: players[winnerId].colour });
+                            arrows = [];
+
+                            for (let pid in players) {
+                                if (!players[pid] || !players[pid].inGame) continue;
+                                players[pid].vx = 0;
+                                players[pid].vy = 0;
+                                players[pid].input = createNeutralInput();
+                                players[pid].lastInputAt = 0;
+                            }
+
+                            if (pendingGameOverTimeout) {
+                                clearTimeout(pendingGameOverTimeout);
+                            }
+
+                            pendingGameOverTimeout = setTimeout(() => {
+                                pendingGameOverTimeout = null;
+                                const winner = players[winnerId];
+                                if (!winner) return;
+                                io.emit('gameOver', { winnerId, winnerName: winner.name, colour: winner.colour });
+                            }, GAME_OVER_DELAY_MS);
                         }
                     }
                 }

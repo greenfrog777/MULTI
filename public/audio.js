@@ -4,7 +4,10 @@
             unlock() {},
             playArrowFire() {},
             playArrowHitObstacle() {},
-            playArrowHitPlayer() {}
+            playArrowHitPlayer() {},
+            playPlayerDeath() {},
+            playVictoryMusic() {},
+            stopVictoryMusic() {}
         };
     }
 
@@ -18,6 +21,22 @@
         masterGain.connect(context.destination);
 
         let unlocked = context.state === 'running';
+        let victoryLoopTimer = null;
+        let victoryActiveNodes = new Set();
+
+        const NOTE_FREQUENCIES = {
+            C4: 261.63,
+            D4: 293.66,
+            E4: 329.63,
+            F4: 349.23,
+            G4: 392.0,
+            A4: 440.0,
+            C5: 523.25,
+            D5: 587.33,
+            E5: 659.25,
+            G5: 783.99,
+            A5: 880.0
+        };
 
         function scheduleEnvelope(gainNode, startTime, attackSeconds, decaySeconds, peakGain, sustainGain) {
             gainNode.gain.cancelScheduledValues(startTime);
@@ -27,7 +46,7 @@
         }
 
         function createTone(options) {
-            const now = context.currentTime;
+            const now = typeof options.startTime === 'number' ? options.startTime : context.currentTime;
             const oscillator = context.createOscillator();
             const gainNode = context.createGain();
             const filter = context.createBiquadFilter();
@@ -56,6 +75,10 @@
             oscillator.connect(filter);
             filter.connect(gainNode);
             gainNode.connect(masterGain);
+            victoryActiveNodes.add(oscillator);
+            oscillator.onended = () => {
+                victoryActiveNodes.delete(oscillator);
+            };
             oscillator.start(now);
             oscillator.stop(now + options.duration + 0.03);
         }
@@ -136,6 +159,124 @@
             window.addEventListener('touchstart', unlockOnce, { passive: true });
         }
 
+        function scheduleVictoryVoice(startTime, notes, options) {
+            let cursor = startTime;
+            for (const note of notes) {
+                const duration = note.duration;
+                if (note.note) {
+                    createTone({
+                        wave: options.wave,
+                        startFrequency: NOTE_FREQUENCIES[note.note],
+                        endFrequency: NOTE_FREQUENCIES[note.note],
+                        duration,
+                        attack: options.attack,
+                        decay: Math.max(0.01, duration - options.attack),
+                        peakGain: options.gain,
+                        endGain: 0.0001,
+                        filterType: options.filterType,
+                        filterFrequency: options.filterFrequency,
+                        filterQ: options.filterQ,
+                        startTime: cursor
+                    });
+                }
+                cursor += duration;
+            }
+        }
+
+        function clearVictoryNodes() {
+            victoryActiveNodes.forEach(node => {
+                try {
+                    node.stop();
+                } catch (e) {
+                    // ignore stop errors on completed oscillators
+                }
+            });
+            victoryActiveNodes.clear();
+        }
+
+        function stopVictoryMusic() {
+            if (victoryLoopTimer) {
+                window.clearInterval(victoryLoopTimer);
+                victoryLoopTimer = null;
+            }
+            clearVictoryNodes();
+        }
+
+        function playVictoryMusic() {
+            withUnlockedAudio(() => {
+                stopVictoryMusic();
+
+                const loopDuration = 2.4;
+                const melody = [
+                    { note: 'C5', duration: 0.2 },
+                    { note: 'E5', duration: 0.2 },
+                    { note: 'G5', duration: 0.2 },
+                    { note: 'A5', duration: 0.2 },
+                    { note: 'G5', duration: 0.2 },
+                    { note: 'E5', duration: 0.2 },
+                    { note: 'D5', duration: 0.2 },
+                    { note: 'E5', duration: 0.2 },
+                    { note: 'G5', duration: 0.2 },
+                    { note: 'E5', duration: 0.2 },
+                    { note: 'C5', duration: 0.4 },
+                    { note: 'D5', duration: 0.2 },
+                    { note: 'E5', duration: 0.2 },
+                    { note: 'G5', duration: 0.2 },
+                    { note: 'E5', duration: 0.2 }
+                ];
+                const bass = [
+                    { note: 'C4', duration: 0.4 },
+                    { note: 'C4', duration: 0.4 },
+                    { note: 'A4', duration: 0.4 },
+                    { note: 'A4', duration: 0.4 },
+                    { note: 'F4', duration: 0.4 },
+                    { note: 'G4', duration: 0.4 }
+                ];
+                const sparkle = [
+                    { note: 'E5', duration: 0.4 },
+                    { note: null, duration: 0.4 },
+                    { note: 'G5', duration: 0.4 },
+                    { note: null, duration: 0.4 },
+                    { note: 'A5', duration: 0.4 },
+                    { note: null, duration: 0.4 }
+                ];
+
+                const scheduleLoop = (offsetSeconds) => {
+                    const startTime = context.currentTime + offsetSeconds;
+                    scheduleVictoryVoice(startTime, melody, {
+                        wave: 'square',
+                        attack: 0.01,
+                        gain: 0.045,
+                        filterType: 'lowpass',
+                        filterFrequency: 1800,
+                        filterQ: 0.8
+                    });
+                    scheduleVictoryVoice(startTime, bass, {
+                        wave: 'triangle',
+                        attack: 0.01,
+                        gain: 0.035,
+                        filterType: 'lowpass',
+                        filterFrequency: 900,
+                        filterQ: 0.7
+                    });
+                    scheduleVictoryVoice(startTime + 0.1, sparkle, {
+                        wave: 'sine',
+                        attack: 0.02,
+                        gain: 0.018,
+                        filterType: 'highpass',
+                        filterFrequency: 1200,
+                        filterQ: 0.6
+                    });
+                };
+
+                scheduleLoop(0.02);
+                scheduleLoop(loopDuration);
+                victoryLoopTimer = window.setInterval(() => {
+                    scheduleLoop(loopDuration);
+                }, loopDuration * 1000);
+            });
+        }
+
         installUnlockListeners();
 
         return {
@@ -205,7 +346,57 @@
                         filterQ: 0.9
                     });
                 });
-            }
+            },
+            playPlayerDeath() {
+                withUnlockedAudio(() => {
+                    createTone({
+                        wave: 'sawtooth',
+                        startFrequency: 180,
+                        endFrequency: 42,
+                        duration: 0.55,
+                        attack: 0.005,
+                        decay: 0.45,
+                        peakGain: 0.16,
+                        endGain: 0.0001,
+                        filterType: 'lowpass',
+                        filterFrequency: 720,
+                        filterQ: 1.4
+                    });
+                    createTone({
+                        wave: 'triangle',
+                        startFrequency: 92,
+                        endFrequency: 36,
+                        duration: 0.72,
+                        attack: 0.01,
+                        decay: 0.6,
+                        peakGain: 0.14,
+                        endGain: 0.0001,
+                        filterType: 'lowpass',
+                        filterFrequency: 420,
+                        filterQ: 0.9
+                    });
+                    createNoiseBurst({
+                        duration: 0.18,
+                        peakGain: 0.07,
+                        attack: 0.001,
+                        decay: 0.16,
+                        filterType: 'bandpass',
+                        filterFrequency: 320,
+                        filterQ: 0.7
+                    });
+                    createNoiseBurst({
+                        duration: 0.4,
+                        peakGain: 0.035,
+                        attack: 0.02,
+                        decay: 0.34,
+                        filterType: 'highpass',
+                        filterFrequency: 1200,
+                        filterQ: 0.5
+                    });
+                });
+            },
+            playVictoryMusic,
+            stopVictoryMusic
         };
     }
 

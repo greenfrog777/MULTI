@@ -8,6 +8,54 @@ let config = {
     scene: [] // filled after LoginScene declaration
 };
 
+function getDirectionalAnimationBase(facing) {
+    if (facing === 'up' || facing === 'down') {
+        return facing;
+    }
+
+    return 'right';
+}
+
+function applyDirectionalFlip(player, facing) {
+    player.setFlipX(facing === 'left');
+}
+
+function playHurtAnimation(player) {
+    if (!player || player.dead || player.isPlayingDeath || player.isPlayingHurt) {
+        return;
+    }
+
+    const facing = player.facing || 'down';
+    const animKey = 'hurt-' + getDirectionalAnimationBase(facing);
+    player.isPlayingHurt = true;
+    applyDirectionalFlip(player, facing);
+    player.anims.play(animKey, true);
+
+    if (player.hurtAnimationResetEvent) {
+        player.hurtAnimationResetEvent.remove(false);
+    }
+
+    player.hurtAnimationResetEvent = player.scene.time.delayedCall(320, () => {
+        player.isPlayingHurt = false;
+        player.hurtAnimationResetEvent = null;
+    });
+}
+
+function playDeathAnimation(player) {
+    const facing = player.facing || 'down';
+    const animKey = 'death-' + getDirectionalAnimationBase(facing);
+    player.isPlayingDeath = true;
+    player.isPlayingHurt = false;
+
+    if (player.hurtAnimationResetEvent) {
+        player.hurtAnimationResetEvent.remove(false);
+        player.hurtAnimationResetEvent = null;
+    }
+
+    applyDirectionalFlip(player, facing);
+    player.anims.play(animKey, true);
+}
+
 let game = null; // created after scenes are registered
 let cursors;
 let canShoot = true; // only one arrow at a time
@@ -99,7 +147,17 @@ function preload()
     this.load.spritesheet('idle', 'assets/hana/idle.png', {
         frameWidth: 80,
         frameHeight: 80
-    });    
+    });
+
+    this.load.spritesheet('hurt', 'assets/hana/hurt.png', {
+        frameWidth: 80,
+        frameHeight: 80
+    });
+
+    this.load.spritesheet('death', 'assets/hana/death.png', {
+        frameWidth: 80,
+        frameHeight: 80
+    });
 
 }
 // Ensure the GameScene key used above is available and calls startNetwork when appropriate
@@ -455,6 +513,23 @@ class VictoryScene extends Phaser.Scene {
     create() {
         const cx = config.width/2;
         const cy = config.height/2;
+        const audio = getGameAudio();
+
+        if (audio && typeof audio.playVictoryMusic === 'function') {
+            audio.playVictoryMusic();
+        }
+
+        this.events.once('shutdown', () => {
+            if (audio && typeof audio.stopVictoryMusic === 'function') {
+                audio.stopVictoryMusic();
+            }
+        });
+
+        this.events.once('destroy', () => {
+            if (audio && typeof audio.stopVictoryMusic === 'function') {
+                audio.stopVictoryMusic();
+            }
+        });
 
         // dark background
         this.cameras.main.setBackgroundColor('#081018');
@@ -536,6 +611,9 @@ class VictoryScene extends Phaser.Scene {
         this.time.delayedCall(5000, () => {
             const btn = this.add.text(cx, config.height - 80, 'Return to Lobby', { font: '20px Arial', fill: '#fff', backgroundColor: '#222', padding: { x: 10, y: 8 } }).setOrigin(0.5).setInteractive();
             btn.on('pointerdown', () => {
+                if (audio && typeof audio.stopVictoryMusic === 'function') {
+                    audio.stopVictoryMusic();
+                }
                 // mark local player not ready and tell server we're back in the lobby
                 if (typeof sendReady === 'function') sendReady(false);
                 if (typeof sendBackToLobby === 'function') sendBackToLobby();
@@ -551,6 +629,9 @@ class VictoryScene extends Phaser.Scene {
 function setupGameForScene(scene) {
     if (!socket) return;
     const audio = getGameAudio();
+    if (audio && typeof audio.stopVictoryMusic === 'function') {
+        audio.stopVictoryMusic();
+    }
     if (audio && typeof audio.unlock === 'function') {
         audio.unlock();
     }
@@ -684,6 +765,48 @@ function create() {
             frames: this.anims.generateFrameNumbers('idle', { start: 8, end: 11 }),
             frameRate: 10,
             repeat: -1
+        });
+
+        this.anims.create({
+            key: 'hurt-right',
+            frames: this.anims.generateFrameNumbers('hurt', { start: 0, end: 3 }),
+            frameRate: 14,
+            repeat: 0
+        });
+
+        this.anims.create({
+            key: 'hurt-down',
+            frames: this.anims.generateFrameNumbers('hurt', { start: 4, end: 7 }),
+            frameRate: 14,
+            repeat: 0
+        });
+
+        this.anims.create({
+            key: 'hurt-up',
+            frames: this.anims.generateFrameNumbers('hurt', { start: 8, end: 11 }),
+            frameRate: 14,
+            repeat: 0
+        });
+
+        this.anims.create({
+            key: 'death-right',
+            frames: this.anims.generateFrameNumbers('death', { start: 0, end: 5 }),
+            frameRate: 12,
+            repeat: 0
+        });
+
+        this.anims.create({
+            key: 'death-down',
+            frames: this.anims.generateFrameNumbers('death', { start: 6, end: 11 }),
+            frameRate: 12,
+            repeat: 0
+        });
+
+        this.anims.create({
+            key: 'death-up',
+            frames: this.anims.generateFrameNumbers('death', { start: 12, end: 17 }),
+            frameRate: 12,
+            repeat: 0
         });
     }
 
@@ -878,6 +1001,11 @@ function setupArrowHandlers(scene, socket) {
             // console.log('Client: Player hit, now their hp is ', data.hp);
 
             p.healthPoints = data.hp;
+            if (data.hp > 0) {
+                playHurtAnimation(p);
+            } else {
+                handleDeath(p);
+            }
         }
     });
 }
@@ -906,7 +1034,7 @@ function updateFacing(player) {
 }
 
 function playCorrectAnimation(player) {
-    if (!player.facing) return; // no facing info
+    if (!player.facing || player.isPlayingHurt || player.isPlayingDeath) return; // no facing info or state animation active
 
     // Reuse the cached deltas from `updateFacing()` when available.
     // This keeps facing selection and idle detection in sync for the same frame.
@@ -1021,6 +1149,10 @@ function applyMovementInput(player, inputState, deltaSeconds) {
 }
 
 function playLocalAnimation(player, isMoving) {
+    if (player.isPlayingHurt || player.isPlayingDeath) {
+        return;
+    }
+
     if (isMoving) {
         if (player.facing === 'left') {
             player.anims.play('right', true);
@@ -1102,29 +1234,46 @@ function reconcileLocalPlayer(player) {
 }
 
 function handleDeath(player) {
+    if (!player || player.dead) {
+        return;
+    }
 
     player.dead = true;
-    // Fade out sprite + health bar over 500ms
-    player.scene.tweens.add({
-        targets: [player, player.healthBar],
-        alpha: 0,
-        duration: 500,
-        onComplete: () => {
+    const audio = getGameAudio();
+    if (player.body) {
+        player.body.stop();
+    }
 
-            // stop movement & disable physics simulation
-            player.body.stop();
-            player.body.enable = false;
+    if (audio && typeof audio.playPlayerDeath === 'function') {
+        audio.playPlayerDeath();
+    }
 
-            // hide and mark inactive so Phaser ignores it in updates
-            player.setVisible(false);
-            player.setActive(false);        
-            
-            // optionally move it off-screen so nothing else collides with the sprite visually
-            player.x = -9999;
-            player.y = -9999;            
+    playDeathAnimation(player);
 
-            player.healthBar.destroy();
-        }
+    player.once('animationcomplete', () => {
+        player.scene.tweens.add({
+            targets: [player, player.healthBar],
+            alpha: 0,
+            duration: 500,
+            onComplete: () => {
+
+                // stop movement & disable physics simulation
+                if (player.body) {
+                    player.body.stop();
+                    player.body.enable = false;
+                }
+
+                // hide and mark inactive so Phaser ignores it in updates
+                player.setVisible(false);
+                player.setActive(false);
+
+                // optionally move it off-screen so nothing else collides with the sprite visually
+                player.x = -9999;
+                player.y = -9999;
+
+                player.healthBar.destroy();
+            }
+        });
     });
 }
 
@@ -1333,6 +1482,9 @@ function addPlayer(scene, id, info) {
     players[id].healthPoints = (typeof info.hp === 'number') ? info.hp : PLAYER_MAX_HP;
     players[id].scene = scene;
     players[id].dead = false;
+    players[id].isPlayingHurt = false;
+    players[id].isPlayingDeath = false;
+    players[id].hurtAnimationResetEvent = null;
 
     // Name text (may be provided in info.name)
     const name = info.name || '';
