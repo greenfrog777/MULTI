@@ -385,11 +385,129 @@ const _serverNetStats = {
     reportEvery: 100
 };
 const ARROW_SPEED = 600;
-const ARROW_RADIUS = 10;    // adjust to match your sprite
-const PLAYER_RADIUS = 20;   // approximate for collision
+const ARROW_COLLISION_RADIUS = 4;
+const ARROW_COLLISION_FORWARD = 18;
+const ARROW_COLLISION_BACK = 12;
+const PLAYER_RADIUS = 26;
 
 let arrows = []; // array of active arrows
 let pendingGameOverTimeout = null;
+
+function getArrowDirection(arrow) {
+    const speed = Math.hypot(arrow.vx, arrow.vy) || 1;
+    return {
+        x: arrow.vx / speed,
+        y: arrow.vy / speed
+    };
+}
+
+function getArrowCapsule(arrow) {
+    const direction = getArrowDirection(arrow);
+    return {
+        startX: arrow.x - direction.x * ARROW_COLLISION_BACK,
+        startY: arrow.y - direction.y * ARROW_COLLISION_BACK,
+        endX: arrow.x + direction.x * ARROW_COLLISION_FORWARD,
+        endY: arrow.y + direction.y * ARROW_COLLISION_FORWARD,
+        radius: ARROW_COLLISION_RADIUS
+    };
+}
+
+function distancePointToSegmentSq(px, py, ax, ay, bx, by) {
+    const abx = bx - ax;
+    const aby = by - ay;
+    const abLenSq = abx * abx + aby * aby;
+
+    if (abLenSq === 0) {
+        const dx = px - ax;
+        const dy = py - ay;
+        return dx * dx + dy * dy;
+    }
+
+    const apx = px - ax;
+    const apy = py - ay;
+    const t = Math.max(0, Math.min(1, (apx * abx + apy * aby) / abLenSq));
+    const closestX = ax + abx * t;
+    const closestY = ay + aby * t;
+    const dx = px - closestX;
+    const dy = py - closestY;
+    return dx * dx + dy * dy;
+}
+
+function segmentIntersectsExpandedRect(ax, ay, bx, by, rect) {
+    const minX = rect.x - ARROW_COLLISION_RADIUS;
+    const maxX = rect.x + rect.w + ARROW_COLLISION_RADIUS;
+    const minY = rect.y - ARROW_COLLISION_RADIUS;
+    const maxY = rect.y + rect.h + ARROW_COLLISION_RADIUS;
+
+    if (ax >= minX && ax <= maxX && ay >= minY && ay <= maxY) {
+        return true;
+    }
+
+    const dx = bx - ax;
+    const dy = by - ay;
+    let tMin = 0;
+    let tMax = 1;
+
+    if (dx === 0) {
+        if (ax < minX || ax > maxX) {
+            return false;
+        }
+    } else {
+        const invDx = 1 / dx;
+        let tx1 = (minX - ax) * invDx;
+        let tx2 = (maxX - ax) * invDx;
+        if (tx1 > tx2) {
+            const temp = tx1;
+            tx1 = tx2;
+            tx2 = temp;
+        }
+        tMin = Math.max(tMin, tx1);
+        tMax = Math.min(tMax, tx2);
+        if (tMin > tMax) {
+            return false;
+        }
+    }
+
+    if (dy === 0) {
+        if (ay < minY || ay > maxY) {
+            return false;
+        }
+    } else {
+        const invDy = 1 / dy;
+        let ty1 = (minY - ay) * invDy;
+        let ty2 = (maxY - ay) * invDy;
+        if (ty1 > ty2) {
+            const temp = ty1;
+            ty1 = ty2;
+            ty2 = temp;
+        }
+        tMin = Math.max(tMin, ty1);
+        tMax = Math.min(tMax, ty2);
+        if (tMin > tMax) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function arrowCapsuleIntersectsWall(arrow, wall) {
+    const capsule = getArrowCapsule(arrow);
+    return segmentIntersectsExpandedRect(capsule.startX, capsule.startY, capsule.endX, capsule.endY, wall);
+}
+
+function arrowCapsuleIntersectsPlayer(arrow, player) {
+    const capsule = getArrowCapsule(arrow);
+    const hitRadius = capsule.radius + PLAYER_RADIUS;
+    return distancePointToSegmentSq(
+        player.x,
+        player.y,
+        capsule.startX,
+        capsule.startY,
+        capsule.endX,
+        capsule.endY
+    ) < (hitRadius * hitRadius);
+}
 
 // Call this when a player shoots
 function spawnArrow(ownerId, x, y, angle) {
@@ -493,7 +611,7 @@ setInterval(() => {
         }
 
         for (const wall of BATTLE_WALLS) {
-            if (circleIntersectsWall(arrow.x, arrow.y, ARROW_RADIUS, wall)) {
+            if (arrowCapsuleIntersectsWall(arrow, wall)) {
                 arrow.dead = true;
                 emitArrowImpact({
                     ownerId: arrow.ownerId,
@@ -516,11 +634,8 @@ setInterval(() => {
             if (id === arrow.ownerId) continue; // don't hit self
             if (!p.inGame) continue;
 
-            const dx = arrow.x - p.x;
-            const dy = arrow.y - p.y;
             if ( p.dead ) continue;             // don't hit dead players;
-            const distSq = dx*dx + dy*dy;
-            if (distSq < (ARROW_RADIUS + PLAYER_RADIUS) ** 2) {
+            if (arrowCapsuleIntersectsPlayer(arrow, p)) {
                 arrow.dead = true;
                 p.hp -= 1;  // apply damage
                 emitArrowImpact({

@@ -833,6 +833,7 @@ function create() {
 }
 
 let arrowList = {}; // key: arrow id, value: Phaser sprite
+const ARROW_STALE_MS = 400;
 
 function getBattleWalls() {
     return Array.isArray(window.battleWalls) ? window.battleWalls : [];
@@ -907,6 +908,14 @@ function resolveLocalWallCollisions(player, nextX, nextY) {
     return { x: resolvedX, y: resolvedY };
 }
 
+function replaceArrowSprite(ownerId, nextSprite) {
+    const existingArrow = arrowList[ownerId];
+    if (existingArrow && existingArrow !== nextSprite) {
+        try { existingArrow.destroy(); } catch (e) {}
+    }
+    arrowList[ownerId] = nextSprite;
+}
+
 function setupArrowHandlers(scene, socket) {
     // Remove previous handlers first to avoid duplicate handlers when re-entering scene
     try { socket.off('spawnArrow'); } catch (e) {}
@@ -927,7 +936,8 @@ function setupArrowHandlers(scene, socket) {
         arrowSprite.targetY = data.y;
         arrowSprite.vx = data.vx || 0;
         arrowSprite.vy = data.vy || 0;
-        arrowList[data.ownerId] = arrowSprite;
+        arrowSprite.lastServerTime = data.serverTime || Date.now();
+        replaceArrowSprite(data.ownerId, arrowSprite);
     });
 
     // When the server sends updated arrow positions
@@ -947,6 +957,7 @@ function setupArrowHandlers(scene, socket) {
                 arrow.targetY = arrowData.y;
                 arrow.vx = arrowData.vx;
                 arrow.vy = arrowData.vy;
+                arrow.lastServerTime = arrowData.serverTime || Date.now();
             } else {
                 // create new arrow if missed spawn event
                 const arrowSprite = scene.add.sprite(arrowData.x, arrowData.y, "arrows", 75);
@@ -956,7 +967,8 @@ function setupArrowHandlers(scene, socket) {
                 arrowSprite.targetY = arrowData.y;
                 arrowSprite.vx = arrowData.vx;
                 arrowSprite.vy = arrowData.vy;
-                arrowList[arrowData.ownerId] = arrowSprite;
+                arrowSprite.lastServerTime = arrowData.serverTime || Date.now();
+                replaceArrowSprite(arrowData.ownerId, arrowSprite);
             }
         }
         // remove arrows that no longer exist on server
@@ -1390,8 +1402,17 @@ function update(time, delta) {
     // Arrow interpolation only (no client-side velocity)
     for (let ownerId in arrowList) {
         let arrow = arrowList[ownerId];
-        arrow.x += (arrow.targetX - arrow.x) * 0.2;
-        arrow.y += (arrow.targetY - arrow.y) * 0.2;
+        if (!arrow) continue;
+        if ((Date.now() - (arrow.lastServerTime || 0)) > ARROW_STALE_MS) {
+            try { arrow.destroy(); } catch (e) {}
+            delete arrowList[ownerId];
+            continue;
+        }
+        const deltaSeconds = delta / 1000;
+        arrow.x += (arrow.vx || 0) * deltaSeconds;
+        arrow.y += (arrow.vy || 0) * deltaSeconds;
+        arrow.x += (arrow.targetX - arrow.x) * 0.15;
+        arrow.y += (arrow.targetY - arrow.y) * 0.15;
     }
 
     // Clamp sprite position to world bounds (before drawing health bars)
