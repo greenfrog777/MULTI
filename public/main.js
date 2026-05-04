@@ -41,6 +41,38 @@ function playHurtAnimation(player) {
     });
 }
 
+function spawnHitParticles(scene, x, y, tint, count) {
+    if (!scene || !scene.add) return;
+    if (!scene.textures || !scene.textures.exists('particle')) return;
+    try {
+        const n = count || 10;
+        const emitter = scene.add.particles(x, y, 'particle', {
+            speed: { min: 50, max: 130 },
+            angle: { min: 0, max: 360 },
+            scale: { start: 1.2, end: 0 },
+            alpha: { start: 0.9, end: 0 },
+            lifespan: 320,
+            quantity: n,
+            tint: tint,
+            emitting: false
+        });
+        emitter.explode(n);
+        scene.time.delayedCall(700, () => { try { emitter.destroy(); } catch (e) {} });
+    } catch (e) {
+        // particles are non-critical
+    }
+}
+
+function flashHitEffect(player) {
+    if (!player || player.dead) return;
+    player.setTint(0xffffff);
+    player.scene.time.delayedCall(100, () => {
+        if (player && !player.dead) {
+            player.setTint(player.originalTint !== undefined ? player.originalTint : 0xffffff);
+        }
+    });
+}
+
 function playDeathAnimation(player) {
     const facing = player.facing || 'down';
     const animKey = 'death-' + getDirectionalAnimationBase(facing);
@@ -811,6 +843,15 @@ function create() {
     }
 
 
+    // Generate a small white circle texture used by the hit particle emitters
+    if (!this.textures.exists('particle')) {
+        const gfx = this.make.graphics({ x: 0, y: 0, add: false });
+        gfx.fillStyle(0xffffff, 1);
+        gfx.fillCircle(4, 4, 4);
+        gfx.generateTexture('particle', 8, 8);
+        gfx.destroy();
+    }
+
     cursors = this.input.keyboard.createCursorKeys();
 
     wasd = this.input.keyboard.addKeys({
@@ -987,6 +1028,21 @@ function setupArrowHandlers(scene, socket) {
             delete arrowList[data.ownerId];
         }
 
+        // Spawn particles at the server-provided impact position
+        if (Number.isFinite(data.x) && Number.isFinite(data.y)) {
+            if (data.type === 'player') {
+                // Use the hit player's colour, lightened heavily so red reads as pink not blood
+                let particleTint = 0xffffff;
+                const hitPlayer = data.targetId && players[data.targetId];
+                if (hitPlayer && typeof hitPlayer.originalTint === 'number') {
+                    particleTint = lightenColor(hitPlayer.originalTint, 0.65);
+                }
+                spawnHitParticles(scene, data.x, data.y, particleTint, 8);
+            } else if (data.type === 'obstacle') {
+                spawnHitParticles(scene, data.x, data.y, 0x8b6940, 8);
+            }
+        }
+
         const audio = getGameAudio();
         if (!audio) return;
 
@@ -1014,6 +1070,7 @@ function setupArrowHandlers(scene, socket) {
 
             p.healthPoints = data.hp;
             if (data.hp > 0) {
+                flashHitEffect(p);
                 playHurtAnimation(p);
             } else {
                 handleDeath(p);
@@ -1487,6 +1544,7 @@ function addPlayer(scene, id, info) {
 
     // Apply tint
     players[id].setTint(lightColor);
+    players[id].originalTint = lightColor;
 
     // Scale sprite
     const scale = 4;
