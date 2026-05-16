@@ -970,6 +970,7 @@ function setupArrowHandlers(scene, socket) {
         if (audio && typeof audio.playArrowFire === 'function') {
             audio.playArrowFire();
         }
+        const receivedAt = Date.now();
         // create a sprite for the arrow
         const arrowSprite = scene.add.sprite(data.x, data.y, 'arrows', 74);
         arrowSprite.rotation = Phaser.Math.DegToRad(data.angle ) + Phaser.Math.DegToRad(90); // point correctly
@@ -978,11 +979,13 @@ function setupArrowHandlers(scene, socket) {
         arrowSprite.vx = data.vx || 0;
         arrowSprite.vy = data.vy || 0;
         arrowSprite.lastServerTime = data.serverTime || Date.now();
+        arrowSprite.lastPacketReceivedAt = receivedAt;
         replaceArrowSprite(data.ownerId, arrowSprite);
     });
 
     // When the server sends updated arrow positions
     socket.on("updateArrows", data => {
+        const receivedAt = Date.now();
         const currentIds = new Set();
         const hasArrow = data.some(a => a.ownerId === myId);
         // only allow shooting again when server reports no active arrow AND local cooldown elapsed
@@ -999,6 +1002,7 @@ function setupArrowHandlers(scene, socket) {
                 arrow.vx = arrowData.vx;
                 arrow.vy = arrowData.vy;
                 arrow.lastServerTime = arrowData.serverTime || Date.now();
+                arrow.lastPacketReceivedAt = receivedAt;
             } else {
                 // create new arrow if missed spawn event
                 const arrowSprite = scene.add.sprite(arrowData.x, arrowData.y, "arrows", 75);
@@ -1009,6 +1013,7 @@ function setupArrowHandlers(scene, socket) {
                 arrowSprite.vx = arrowData.vx;
                 arrowSprite.vy = arrowData.vy;
                 arrowSprite.lastServerTime = arrowData.serverTime || Date.now();
+                arrowSprite.lastPacketReceivedAt = receivedAt;
                 replaceArrowSprite(arrowData.ownerId, arrowSprite);
             }
         }
@@ -1460,7 +1465,7 @@ function update(time, delta) {
     for (let ownerId in arrowList) {
         let arrow = arrowList[ownerId];
         if (!arrow) continue;
-        if ((Date.now() - (arrow.lastServerTime || 0)) > ARROW_STALE_MS) {
+        if ((Date.now() - (arrow.lastPacketReceivedAt || 0)) > ARROW_STALE_MS) {
             try { arrow.destroy(); } catch (e) {}
             delete arrowList[ownerId];
             continue;
