@@ -151,6 +151,7 @@ io.on('connection', socket => {
     socket.on('move', pos => {
         if (players[id]) {
             const player = players[id];
+            if (player.isBot) return;
 
             // Backward-compatible fallback for older clients still sending raw positions.
             if (pos && typeof pos.x === 'number' && typeof pos.y === 'number' && !('up' in pos) && !('down' in pos) && !('left' in pos) && !('right' in pos) && !pos.input) {
@@ -178,6 +179,7 @@ io.on('connection', socket => {
         if (!players[id]) {
             // create player record now that we have a name
             const colour = colours[Object.keys(players).length % colours.length];
+            const isBot = clean.trim().toLowerCase() === 'testbot';
             players[id] = {
                 x: WORLD_WIDTH / 2,
                 y: WORLD_HEIGHT / 2,
@@ -187,9 +189,11 @@ io.on('connection', socket => {
                 hp: PLAYER_MAX_HP,
                 dead: false,
                 name: clean,
-                ready: false,
+                ready: isBot,
                 joinOrder: nextJoinOrder++,
                 inGame: false,
+                isBot,
+                botNextShotAt: 0,
                 input: createNeutralInput(),
                 lastInputAt: 0,
                 lastInputSeq: 0
@@ -213,7 +217,12 @@ io.on('connection', socket => {
             emitLobbyUpdate();
         } else {
             // If player record already exists (reconnect), just update the name
+            const isBot = clean.trim().toLowerCase() === 'testbot';
             players[id].name = clean;
+            players[id].isBot = isBot;
+            if (isBot && !players[id].inGame) {
+                players[id].ready = true;
+            }
             // ensure joinOrder persists for reconnects
             if (!players[id].joinOrder) players[id].joinOrder = nextJoinOrder++;
             io.emit('update', { id, position: serializePlayer(players[id]), serverTime: Date.now() });
@@ -288,6 +297,7 @@ io.on('connection', socket => {
             players[pid].hp = PLAYER_MAX_HP; // always reset HP at match start
             players[pid].inGame = true;
             players[pid].ready = false;
+            players[pid].botNextShotAt = Date.now() + 400;
             players[pid].vx = 0;
             players[pid].vy = 0;
             players[pid].input = createNeutralInput();
@@ -325,6 +335,8 @@ io.on('connection', socket => {
         // ignore if player hasn't joined yet
         if (!players[id]) return;
         if (!matchActive || !players[id].inGame || players[id].dead) return;
+        if (players[id].isBot) return;
+        if (!data || !Number.isFinite(Number(data.angle))) return;
 
         // console.log('Server received shootArrowNew from', socket.id, 'data:', data);
 
@@ -333,14 +345,14 @@ io.on('connection', socket => {
 
         // console.log('Spawning arrow for', socket.id, 'at', data.x, data.y, 'angle', data.angle);
 
-        spawnArrow(socket.id, data.x, data.y, data.angle);
+        spawnArrow(socket.id, Number(data.angle));
     });    
 
     // Handle a player returning to the lobby (not automatically done by server)
     socket.on('backToLobby', () => {
         if (!players[id]) return;
         players[id].inGame = false;
-        players[id].ready = false;
+        players[id].ready = !!players[id].isBot;
         players[id].dead = false;
         players[id].vx = 0;
         players[id].vy = 0;
@@ -389,6 +401,10 @@ const ARROW_COLLISION_RADIUS = 4;
 const ARROW_COLLISION_FORWARD = 18;
 const ARROW_COLLISION_BACK = 12;
 const PLAYER_RADIUS = 26;
+const BOT_MOVE_SPEED_FACTOR = 0.85;
+const BOT_ORBIT_DISTANCE = 220;
+const BOT_FIRE_COOLDOWN_MS = 850;
+const BOT_FIRE_JITTER_MS = 250;
 
 let arrows = []; // array of active arrows
 let pendingGameOverTimeout = null;
@@ -509,12 +525,157 @@ function arrowCapsuleIntersectsPlayer(arrow, player) {
     ) < (hitRadius * hitRadius);
 }
 
+function arrowSweepIntersectsWall(arrow, wall) {
+    const capsule = getArrowCapsule(arrow);
+    if (segmentIntersectsExpandedRect(capsule.startX, capsule.startY, capsule.endX, capsule.endY, wall)) {
+        return true;
+    }
+
+    if (!Number.isFinite(arrow.prevX) || !Number.isFinite(arrow.prevY)) {
+        return false;
+    }
+
+    const previous = {
+        x: arrow.prevX,
+        y: arrow.prevY,
+        vx: arrow.vx,
+        vy: arrow.vy
+    };
+    const prevCapsule = getArrowCapsule(previous);
+    if (segmentIntersectsExpandedRect(prevCapsule.startX, prevCapsule.startY, prevCapsule.endX, prevCapsule.endY, wall)) {
+        return true;
+    }
+
+    return segmentIntersectsExpandedRect(prevCapsule.startX, prevCapsule.startY, capsule.endX, capsule.endY, wall);
+}
+
+function arrowSweepIntersectsPlayer(arrow, player) {
+    const capsule = getArrowCapsule(arrow);
+    const hitRadius = capsule.radius + PLAYER_RADIUS;
+    const hitRadiusSq = hitRadius * hitRadius;
+
+    if (distancePointToSegmentSq(player.x, player.y, capsule.startX, capsule.startY, capsule.endX, capsule.endY) < hitRadiusSq) {
+        return true;
+    }
+
+    if (!Number.isFinite(arrow.prevX) || !Number.isFinite(arrow.prevY)) {
+        return false;
+    }
+
+    const previous = {
+        x: arrow.prevX,
+        y: arrow.prevY,
+        vx: arrow.vx,
+        vy: arrow.vy
+    };
+    const prevCapsule = getArrowCapsule(previous);
+
+    if (distancePointToSegmentSq(player.x, player.y, prevCapsule.startX, prevCapsule.startY, prevCapsule.endX, prevCapsule.endY) < hitRadiusSq) {
+        return true;
+    }
+
+    return distancePointToSegmentSq(player.x, player.y, prevCapsule.startX, prevCapsule.startY, capsule.endX, capsule.endY) < hitRadiusSq;
+}
+
+function getNearestBotTarget(botId) {
+    const bot = players[botId];
+    if (!bot || !bot.inGame || bot.dead) return null;
+
+    let nearest = null;
+    let nearestDistSq = Infinity;
+    for (const pid in players) {
+        if (pid === botId) continue;
+        const candidate = players[pid];
+        if (!candidate || !candidate.inGame || candidate.dead) continue;
+        const dx = candidate.x - bot.x;
+        const dy = candidate.y - bot.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < nearestDistSq) {
+            nearestDistSq = distSq;
+            nearest = { id: pid, player: candidate, dx, dy, distSq };
+        }
+    }
+
+    return nearest;
+}
+
+function hasWallLineOfSight(fromX, fromY, toX, toY) {
+    for (const wall of BATTLE_WALLS) {
+        if (segmentIntersectsExpandedRect(fromX, fromY, toX, toY, wall)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function updateBotBehavior(botId, now) {
+    const bot = players[botId];
+    if (!bot || !bot.inGame || bot.dead) {
+        return createNeutralInput();
+    }
+
+    const targetInfo = getNearestBotTarget(botId);
+    if (!targetInfo) {
+        return createNeutralInput();
+    }
+
+    const target = targetInfo.player;
+    const distance = Math.sqrt(targetInfo.distSq) || 1;
+    const dirX = targetInfo.dx / distance;
+    const dirY = targetInfo.dy / distance;
+
+    let steerX = 0;
+    let steerY = 0;
+    if (distance > BOT_ORBIT_DISTANCE + 40) {
+        steerX += dirX;
+        steerY += dirY;
+    } else if (distance < BOT_ORBIT_DISTANCE - 40) {
+        steerX -= dirX;
+        steerY -= dirY;
+    }
+
+    const strafeDir = (((now / 700) | 0) % 2 === 0) ? 1 : -1;
+    steerX += -dirY * strafeDir * 0.85;
+    steerY += dirX * strafeDir * 0.85;
+
+    const steerLen = Math.hypot(steerX, steerY) || 1;
+    steerX /= steerLen;
+    steerY /= steerLen;
+
+    const hasActiveArrow = arrows.some(a => a.ownerId === botId);
+    const canShootNow = now >= (bot.botNextShotAt || 0) && !hasActiveArrow;
+    if (canShootNow && hasWallLineOfSight(bot.x, bot.y, target.x, target.y)) {
+        const angle = Math.atan2(target.y - bot.y, target.x - bot.x) * 180 / Math.PI;
+        spawnArrow(botId, angle);
+        bot.botNextShotAt = now + BOT_FIRE_COOLDOWN_MS + Math.floor(Math.random() * BOT_FIRE_JITTER_MS);
+    }
+
+    return {
+        up: steerY < -0.2,
+        down: steerY > 0.2,
+        left: steerX < -0.2,
+        right: steerX > 0.2,
+        axisX: steerX,
+        axisY: steerY
+    };
+}
+
 // Call this when a player shoots
-function spawnArrow(ownerId, x, y, angle) {
+function spawnArrow(ownerId, angle) {
+    const owner = players[ownerId];
+    if (!owner || owner.dead || !owner.inGame) return;
+    if (!Number.isFinite(angle)) return;
+
     const rad = angle * Math.PI / 180; // convert degrees to radians
+    const muzzleOffset = 24;
+    const x = owner.x + Math.cos(rad) * muzzleOffset;
+    const y = owner.y + Math.sin(rad) * muzzleOffset;
+
     arrows.push({
         ownerId,
         x, y,
+        prevX: x,
+        prevY: y,
         vx: Math.cos(rad) * ARROW_SPEED,
         vy: Math.sin(rad) * ARROW_SPEED,
         angle // send angle to client
@@ -571,12 +732,16 @@ setInterval(() => {
         }
 
         let input = player.input || createNeutralInput();
+        if (player.isBot) {
+            input = updateBotBehavior(id, now);
+            player.lastInputAt = now;
+        }
         if ((now - (player.lastInputAt || 0)) > INPUT_PERSIST_MS) {
             input = createNeutralInput();
         }
 
-        let axisX = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-        let axisY = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+        let axisX = Number.isFinite(input.axisX) ? input.axisX : (input.right ? 1 : 0) - (input.left ? 1 : 0);
+        let axisY = Number.isFinite(input.axisY) ? input.axisY : (input.down ? 1 : 0) - (input.up ? 1 : 0);
 
         if (axisX !== 0 || axisY !== 0) {
             const length = Math.hypot(axisX, axisY) || 1;
@@ -584,8 +749,9 @@ setInterval(() => {
             axisY /= length;
         }
 
-        player.vx = axisX * PLAYER_MOVE_SPEED;
-        player.vy = axisY * PLAYER_MOVE_SPEED;
+        const moveSpeed = player.isBot ? PLAYER_MOVE_SPEED * BOT_MOVE_SPEED_FACTOR : PLAYER_MOVE_SPEED;
+        player.vx = axisX * moveSpeed;
+        player.vy = axisY * moveSpeed;
 
         const nextX = player.x + player.vx * deltaTime;
         const nextY = player.y + player.vy * deltaTime;
@@ -596,6 +762,9 @@ setInterval(() => {
     }
 
     for (let arrow of arrows) {
+        arrow.prevX = arrow.x;
+        arrow.prevY = arrow.y;
+
         // 1. Move arrow
         arrow.x += arrow.vx * deltaTime;
         arrow.y += arrow.vy * deltaTime;
@@ -611,7 +780,7 @@ setInterval(() => {
         }
 
         for (const wall of BATTLE_WALLS) {
-            if (arrowCapsuleIntersectsWall(arrow, wall)) {
+            if (arrowSweepIntersectsWall(arrow, wall)) {
                 arrow.dead = true;
                 emitArrowImpact({
                     ownerId: arrow.ownerId,
@@ -635,7 +804,7 @@ setInterval(() => {
             if (!p.inGame) continue;
 
             if ( p.dead ) continue;             // don't hit dead players;
-            if (arrowCapsuleIntersectsPlayer(arrow, p)) {
+            if (arrowSweepIntersectsPlayer(arrow, p)) {
                 arrow.dead = true;
                 p.hp -= 1;  // apply damage
                 emitArrowImpact({
