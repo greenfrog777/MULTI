@@ -558,6 +558,12 @@ function arrowSweepIntersectsPlayer(arrow, player) {
         return true;
     }
 
+    if (Number.isFinite(player.prevX) && Number.isFinite(player.prevY)) {
+        if (distancePointToSegmentSq(player.prevX, player.prevY, capsule.startX, capsule.startY, capsule.endX, capsule.endY) < hitRadiusSq) {
+            return true;
+        }
+    }
+
     if (!Number.isFinite(arrow.prevX) || !Number.isFinite(arrow.prevY)) {
         return false;
     }
@@ -730,6 +736,9 @@ setInterval(() => {
             player.vy = 0;
             continue;
         }
+
+        player.prevX = player.x;
+        player.prevY = player.y;
 
         let input = player.input || createNeutralInput();
         if (player.isBot) {
